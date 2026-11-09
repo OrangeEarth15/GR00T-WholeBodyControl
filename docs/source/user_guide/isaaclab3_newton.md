@@ -54,7 +54,8 @@ Append these overrides to the usual training, eval or export commands:
 ## Known differences on Newton
 
 - Friction is combined with max() instead of the multiply mode used with PhysX.
-- MJWarp does not enforce joint velocity limits.
+- MJWarp does not enforce joint velocity limits. Effort limits do apply: Newton turns the implicit
+  PD drives into MuJoCo position actuators with `forcerange = ±effort_limit_sim`.
 - `undesired_contacts` reads normal contact forces in Isaac Lab 3.0 (total force in 2.3).
 - Contacts within the shape gap (1 cm by default) are generated; the gap drives most of the
   collision cost on the trimesh terrain.
