@@ -53,6 +53,7 @@ def export_policy_as_onnx(inference_model, path, exported_policy_name, example_o
             input_names=["obs_dict"],
             output_names=["action"],
             opset_version=13,
+            dynamo=False,  # torch >= 2.9 defaults to the dynamo exporter, which rejects dict args
         )
 
 
@@ -185,6 +186,7 @@ def export_universal_token_module_as_onnx(
             input_names=["obs_dict"],
             output_names=["action"],
             opset_version=13,
+            dynamo=False,  # torch >= 2.9 defaults to the dynamo exporter, which rejects dict args
         )
 
     print(f"\nExported ONNX model: {encoder_name} encoder -> {decoder_name} decoder")  # noqa: T201
@@ -323,6 +325,7 @@ def export_universal_token_encoders_as_onnx(
             input_names=["obs_dict"],
             output_names=["encoded_tokens"],
             opset_version=13,
+            dynamo=False,  # torch >= 2.9 defaults to the dynamo exporter, which rejects dict args
         )
 
     print(  # noqa: T201
@@ -456,6 +459,7 @@ def export_universal_token_decoder_as_onnx(
             input_names=["obs_dict"],
             output_names=["action"],
             opset_version=13,
+            dynamo=False,  # torch >= 2.9 defaults to the dynamo exporter, which rejects dict args
         )
 
     print(f"\nExported DECODER ONLY ONNX model with decoder: {decoder_name}")  # noqa: T201

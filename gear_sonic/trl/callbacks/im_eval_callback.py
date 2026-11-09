@@ -133,19 +133,16 @@ class ImEvalCallback(TrainerCallback):
             metrics_eval = self.evaluate_policy()
 
     def save_metrics_eval(self, metrics_eval):
+        def plain(x):
+            # numpy arrays and numpy scalars (np.float32 is not JSON serializable)
+            return x.tolist() if isinstance(x, np.ndarray | np.generic) else x
+
         metrics_json = {}
         for k, v in metrics_eval.items():
             if k in ["eval/all_metrics_dict", "eval/failed_metrics_dict"]:
-                metrics_json[k] = {}
-                for kk, vv in v.items():
-                    if isinstance(vv, np.ndarray):
-                        metrics_json[k][kk] = vv.tolist()
-                    else:
-                        metrics_json[k][kk] = vv
-            elif isinstance(v, np.ndarray):
-                metrics_json[k] = v.tolist()
+                metrics_json[k] = {kk: plain(vv) for kk, vv in v.items()}
             else:
-                metrics_json[k] = v
+                metrics_json[k] = plain(v)
 
         os.makedirs(self.output_dir, exist_ok=True)
         with open(os.path.join(self.output_dir, "metrics_eval.json"), "w") as f:
