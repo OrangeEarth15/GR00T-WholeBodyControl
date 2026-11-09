@@ -74,8 +74,10 @@ desired KL 0.01) makes it worse on either backend: on PhysX the eval success rat
 ++algo.config.adaptive_lr_max=2e-5 ++algo.config.desired_kl=0.003
 ```
 
-With these settings, 500 iterations on Newton (2 substeps) raised the eval success rate on PhysX from 97.2% to
-98.1% and lowered the local MPJPE by 1.9 mm. Leg and global position errors grow (+3 mm and +16 mm at 500
+With these settings, 500 iterations on Newton (2 substeps) lowered the local MPJPE on PhysX by 1.9 mm without
+losing success rate (98.1%, against 97.2% and 97.5% in two evals of the released checkpoint; reruns of the same
+eval differ by up to about 0.6 points, so compare MPJPE rather than small success-rate gaps). Leg and global position
+errors grow (+3 mm and +16 mm at 500
 iterations) and keep drifting in longer runs, so compare the checkpoints from 500 to 1000 iterations and check the
 legs before deploying one.
 
