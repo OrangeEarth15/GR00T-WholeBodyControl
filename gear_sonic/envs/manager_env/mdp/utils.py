@@ -33,13 +33,14 @@ def debug_visualize_object_projection(
         show_predicted: Whether to also visualize predicted object position (in red)
     """
     import cv2
+
     from gear_sonic.isaac_utils.math_wxyz import (
-    wxyz_from_xyzw,
         quat_apply,
         quat_apply_inverse,
         quat_conjugate,
         quat_from_euler_xyz,
         quat_mul,
+        wxyz_from_xyzw,
     )
 
     # Get the image for the specified environment

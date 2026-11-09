@@ -1,20 +1,22 @@
 """Fused Warp evaluation of the tracking reward terms (Direct-Warp step A').
 
-The sonic_release reward set (rewards/tracking/base_5point_local_feet_acc) is twelve small terms. Evaluated one by
-one in torch they cost about 200 kernel launches per control step. FusedRewardManager computes all twelve raw values
-in one Warp kernel, reading robot state straight from the Isaac Lab Warp buffers, then applies weights and episode
-sums exactly like isaaclab.managers.RewardManager.compute. If the configured terms are not all supported (another
+The sonic_release reward set (rewards/tracking/base_5point_local_feet_acc) is twelve small terms.
+Evaluated one by one in torch they cost about 200 kernel launches per control step.
+FusedRewardManager computes all twelve raw values in one Warp kernel, reading robot state straight
+from the Isaac Lab Warp buffers, then applies weights and episode sums exactly like
+isaaclab.managers.RewardManager.compute. If the configured terms are not all supported (another
 function, or a parameter the kernel does not model) it keeps the stock per-term path.
 
-Enable with ++manager_env.config.fused_rewards=True. With ++manager_env.config.fused_rewards_check=True the stock
-terms are also evaluated every step and the largest per-term difference is printed every 24 steps.
+Enable with ++manager_env.config.fused_rewards=True. With
+++manager_env.config.fused_rewards_check=True the stock terms are also evaluated every step and the
+largest per-term difference is printed every 24 steps.
 """
 
 from __future__ import annotations
 
+from isaaclab.managers import RewardManager
 import torch
 import warp as wp
-from isaaclab.managers import RewardManager
 
 from gear_sonic.envs.manager_env import mdp
 from gear_sonic.envs.manager_env.mdp.commands import _get_body_indexes
@@ -50,7 +52,15 @@ _KIND_OF_FUNC = {
     mdp.tracking_local_vr_5point_error: POINTS_LOCAL,
     mdp.joint_acc_l2: JOINT_ACC,
 }
-_GAUSSIAN_KINDS = (ANCHOR_POS, ANCHOR_ORI, BODY_POS, BODY_ORI, BODY_LIN_VEL, BODY_ANG_VEL, POINTS_LOCAL)
+_GAUSSIAN_KINDS = (
+    ANCHOR_POS,
+    ANCHOR_ORI,
+    BODY_POS,
+    BODY_ORI,
+    BODY_LIN_VEL,
+    BODY_ANG_VEL,
+    POINTS_LOCAL,
+)
 
 
 @wp.func
@@ -149,7 +159,9 @@ def _tracking_rewards_kernel(
     robot_anchor_pos = body_pos[e, anchor_body]
     robot_anchor_quat = _wxyz(body_quat[e, anchor_body])
     ref_anchor_p = wp.vec3(ref_anchor_pos[e, 0], ref_anchor_pos[e, 1], ref_anchor_pos[e, 2])
-    ref_anchor_q = wp.vec4(ref_anchor_quat[e, 0], ref_anchor_quat[e, 1], ref_anchor_quat[e, 2], ref_anchor_quat[e, 3])
+    ref_anchor_q = wp.vec4(
+        ref_anchor_quat[e, 0], ref_anchor_quat[e, 1], ref_anchor_quat[e, 2], ref_anchor_quat[e, 3]
+    )
 
     col = columns[ANCHOR_POS]
     if col >= 0:
@@ -268,7 +280,9 @@ class FusedRewardManager(RewardManager):
         if self._unsupported:
             print(f"[FusedRewardManager] stock per-term path: {self._unsupported}")  # noqa: T201
         else:
-            print(f"[FusedRewardManager] {len(self._term_names)} terms in one Warp kernel")  # noqa: T201
+            print(
+                f"[FusedRewardManager] {len(self._term_names)} terms in one Warp kernel"
+            )  # noqa: T201
 
     def _prepare_fused(self) -> str | None:
         """Map the configured terms onto kernel slots; returns why not, or None when all are supported."""
@@ -285,7 +299,10 @@ class FusedRewardManager(RewardManager):
             if kind is None or columns[kind] != -1:
                 return f"term '{name}' ({getattr(term_cfg.func, '__name__', term_cfg.func)})"
             params = term_cfg.params
-            if kind in (BODY_POS, BODY_ORI, BODY_LIN_VEL, BODY_ANG_VEL) and params.get("body_names") is not None:
+            if (
+                kind in (BODY_POS, BODY_ORI, BODY_LIN_VEL, BODY_ANG_VEL)
+                and params.get("body_names") is not None
+            ):
                 return f"term '{name}' uses a body subset"
             if "command_name" in params:
                 command_names.add(params["command_name"])
@@ -308,7 +325,9 @@ class FusedRewardManager(RewardManager):
             columns[kind] = col if term_cfg.weight != 0.0 else -1
         if len(command_names) > 1:
             return f"several commands {command_names}"
-        self._command = self._env.command_manager.get_term(command_names.pop()) if command_names else None
+        self._command = (
+            self._env.command_manager.get_term(command_names.pop()) if command_names else None
+        )
         robot = self._command.robot if self._command is not None else self._env.scene["robot"]
         self._robot = robot
         for cfg in (limit_cfg, acc_cfg):
@@ -326,12 +345,16 @@ class FusedRewardManager(RewardManager):
         self._tracked_bodies = _int_array(tracked.tolist(), dev)
         shake = _get_body_indexes(self._command, shake_names) if self._command is not None else []
         self._shake_bodies = _int_array([int(tracked[i]) for i in shake], dev)
-        self._point_bodies = _int_array(self._command.reward_point_body_indices if self._command else [], dev)
+        self._point_bodies = _int_array(
+            self._command.reward_point_body_indices if self._command else [], dev
+        )
         offsets = self._command.reward_point_body_offsets[0] if self._command else torch.zeros(0, 3)
         self._point_offsets = wp.array(offsets.cpu().numpy(), dtype=wp.vec3f, device=dev)
         self._limit_joints = _int_array(joint_ids(limit_cfg), dev)
         self._acc_joints = _int_array(joint_ids(acc_cfg), dev)
-        self._contact_bodies = _int_array(contact_ids if columns[UNDESIRED_CONTACTS] >= 0 else [], dev)
+        self._contact_bodies = _int_array(
+            contact_ids if columns[UNDESIRED_CONTACTS] >= 0 else [], dev
+        )
         self._weights = torch.tensor([float(c.weight) for c in self._term_cfgs], device=dev)
         self._raw = torch.zeros((self.num_envs, len(self._term_names)), device=dev)
         self._raw_wp = wp.from_torch(self._raw)
@@ -354,7 +377,9 @@ class FusedRewardManager(RewardManager):
 
         data = self._robot.data
         if self._sensor_name is not None:
-            contact = self._env.scene.sensors[self._sensor_name].data.net_normal_forces_w_history.warp
+            contact = self._env.scene.sensors[
+                self._sensor_name
+            ].data.net_normal_forces_w_history.warp
         else:
             contact = wp.zeros((self.num_envs, 1, 1), dtype=wp.vec3f, device=self.device)
         action_manager = self._env.action_manager
@@ -368,7 +393,11 @@ class FusedRewardManager(RewardManager):
                 ref(command.body_quat_relative_w),
                 ref(command.body_lin_vel_w),
                 ref(command.body_ang_vel_w),
-                ref(command.reward_point_body_pos_w) if self._point_bodies.shape[0] else self._empty3,
+                (
+                    ref(command.reward_point_body_pos_w)
+                    if self._point_bodies.shape[0]
+                    else self._empty3
+                ),
                 data.body_pos_w.warp,
                 data.body_quat_w.warp,
                 data.body_lin_vel_w.warp,
@@ -414,5 +443,9 @@ class FusedRewardManager(RewardManager):
             self._check_max[col] = torch.maximum(self._check_max[col], err)
         self._check_steps += 1
         if self._check_steps % 24 == 0:
-            worst = ", ".join(f"{n}={v:.2e}" for n, v in zip(self._term_names, self._check_max.tolist()))
-            print(f"[FusedRewardManager] parity over {self._check_steps} steps, max rel err: {worst}")  # noqa: T201
+            worst = ", ".join(
+                f"{n}={v:.2e}" for n, v in zip(self._term_names, self._check_max.tolist())
+            )
+            print(
+                f"[FusedRewardManager] parity over {self._check_steps} steps, max rel err: {worst}"
+            )  # noqa: T201

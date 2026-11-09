@@ -2494,7 +2494,9 @@ class MotionLibBase:
             failure_counts = torch.zeros(
                 self.adp_samp_num_bins, device=bin_ids.device, dtype=torch.float32
             ).index_add_(0, bin_ids, failure.to(torch.float32))
-            failure_counts_multiplier = self.adaptive_sampling_cfg.get("failure_counts_multiplier", 1)
+            failure_counts_multiplier = self.adaptive_sampling_cfg.get(
+                "failure_counts_multiplier", 1
+            )
             self.adp_samp_num_failures += failure_counts * failure_counts_multiplier
 
     def sync_and_compute_adaptive_sampling(self, accelerator=None, sync_across_gpus=False):

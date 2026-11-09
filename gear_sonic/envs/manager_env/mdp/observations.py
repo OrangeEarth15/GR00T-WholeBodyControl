@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import torch
+
+from gear_sonic.envs.env_utils import joint_utils
+from gear_sonic.envs.manager_env.mdp import commands, utils
 from gear_sonic.isaac_utils.math_wxyz import (
-    wxyz_from_xyzw,
     matrix_from_quat,
     quat_apply,
     quat_apply_inverse,
@@ -14,19 +17,15 @@ from gear_sonic.isaac_utils.math_wxyz import (
     quat_inv,
     quat_mul,
     subtract_frame_transforms,
+    wxyz_from_xyzw,
 )
-import torch
-
-from gear_sonic.envs.env_utils import joint_utils
-from gear_sonic.envs.manager_env.mdp import commands, utils
 from gear_sonic.trl.utils import torch_transform
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
 
 
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import ObservationGroupCfg as ObsGroup, SceneEntityCfg
 from isaaclab.utils import configclass
 
 # Joint ordering constants (Mujoco order for compatibility)
@@ -1561,7 +1560,9 @@ def joint_pos_multi_future_select_joints_for_smpl(
     joint_pos = command.joint_pos_multi_future_for_smpl
     # Flatten case: (num_envs, num_future_frames * num_joints)
     joint_pos_reshaped = joint_pos.view(env.num_envs, command.smpl_num_future_frames, -1)
-    joint_pos_selected = joint_pos_reshaped[..., commands._device_index(joints_idx, joint_pos.device)]
+    joint_pos_selected = joint_pos_reshaped[
+        ..., commands._device_index(joints_idx, joint_pos.device)
+    ]
     return joint_pos_selected
 
 
@@ -1585,7 +1586,9 @@ def joint_pos_multi_future_select_joints_for_smpl(  # noqa: F811
     joint_pos = command.joint_pos_multi_future_for_smpl
     # Flatten case: (num_envs, num_future_frames * num_joints)
     joint_pos_reshaped = joint_pos.view(env.num_envs, command.smpl_num_future_frames, -1)
-    joint_pos_selected = joint_pos_reshaped[..., commands._device_index(joints_idx, joint_pos.device)]
+    joint_pos_selected = joint_pos_reshaped[
+        ..., commands._device_index(joints_idx, joint_pos.device)
+    ]
     return joint_pos_selected
 
 

@@ -6,19 +6,19 @@ from typing import TYPE_CHECKING
 
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
-from gear_sonic.isaac_utils.math_wxyz import (
-    wxyz_from_xyzw,
-    quat_apply,
-    quat_error_magnitude,
-    quat_inv,
-    quat_mul,
-)
 import torch
 
 from gear_sonic.envs.manager_env.mdp.commands import (
     ForceTrackingCommand,
     TrackingCommand,
     _get_body_indexes,
+)
+from gear_sonic.isaac_utils.math_wxyz import (
+    quat_apply,
+    quat_error_magnitude,
+    quat_inv,
+    quat_mul,
+    wxyz_from_xyzw,
 )
 
 if TYPE_CHECKING:

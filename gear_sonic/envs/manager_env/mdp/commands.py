@@ -16,6 +16,11 @@ from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.markers.config import DEFORMABLE_TARGET_MARKER_CFG
 import isaaclab.sim as sim_utils
 from isaaclab.utils import configclass
+import numpy as np
+import torch
+
+from gear_sonic.envs.env_utils import joint_utils
+from gear_sonic.isaac_utils import rotations
 from gear_sonic.isaac_utils.math_wxyz import (
     matrix_from_quat,
     quat_apply,
@@ -28,11 +33,6 @@ from gear_sonic.isaac_utils.math_wxyz import (
     wxyz_from_xyzw,
     xyzw_from_wxyz,
 )
-import numpy as np
-import torch
-
-from gear_sonic.envs.env_utils import joint_utils
-from gear_sonic.isaac_utils import rotations
 from gear_sonic.trl.utils import common, order_converter, torch_transform
 from gear_sonic.utils.motion_lib import motion_lib_robot
 

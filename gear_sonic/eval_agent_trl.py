@@ -35,7 +35,6 @@ import filelock
 import json
 import os
 import shutil
-import subprocess
 import sys
 
 sys.path.append(os.getcwd())
@@ -51,10 +50,8 @@ import omegaconf
 import yaml
 
 from gear_sonic import train_agent_trl
-from gear_sonic.trl.utils import common as trl_utils_common
-from gear_sonic.trl.utils import scheduler
-from gear_sonic.utils import common as rl_utils_common
-from gear_sonic.utils import config_utils, obs_utils
+from gear_sonic.trl.utils import common as trl_utils_common, scheduler
+from gear_sonic.utils import common as rl_utils_common, config_utils, obs_utils
 
 config_utils.register_rl_resolvers()
 

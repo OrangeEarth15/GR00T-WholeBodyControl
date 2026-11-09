@@ -5,9 +5,10 @@ released checkpoint and the deploy stack), so robot data is converted at the Isa
 math runs on these copies. Keep them byte-identical to 2.3.2 so observations match the old pipeline.
 """
 
+# convention-free, re-exported for SONIC
+from isaaclab.utils.math import sample_uniform  # noqa: F401
 import torch
 
-from isaaclab.utils.math import sample_uniform  # noqa: F401  (convention-free, re-exported for SONIC)
 
 @torch.jit.script
 def normalize(x: torch.Tensor, eps: float = 1e-9) -> torch.Tensor:
@@ -132,7 +133,8 @@ def axis_angle_from_quat(quat: torch.Tensor, eps: float = 1.0e-6) -> torch.Tenso
         https://github.com/facebookresearch/pytorch3d/blob/main/pytorch3d/transforms/rotation_conversions.py#L526-L554
     """
     # Modified to take in quat as [q_w, q_x, q_y, q_z]
-    # Quaternion is [q_w, q_x, q_y, q_z] = [cos(theta/2), n_x * sin(theta/2), n_y * sin(theta/2), n_z * sin(theta/2)]
+    # Quaternion is [q_w, q_x, q_y, q_z]
+    #   = [cos(theta/2), n_x * sin(theta/2), n_y * sin(theta/2), n_z * sin(theta/2)]
     # Axis-angle is [a_x, a_y, a_z] = [theta * n_x, theta * n_y, theta * n_z]
     # Thus, axis-angle is [q_x, q_y, q_z] / (sin(theta/2) / theta)
     # When theta = 0, (sin(theta/2) / theta) is undefined
@@ -321,7 +323,10 @@ def quat_error_magnitude(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
 
 
 def subtract_frame_transforms(
-    t01: torch.Tensor, q01: torch.Tensor, t02: torch.Tensor | None = None, q02: torch.Tensor | None = None
+    t01: torch.Tensor,
+    q01: torch.Tensor,
+    t02: torch.Tensor | None = None,
+    q02: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     r"""Subtract transformations between two reference frames into a stationary frame.
 

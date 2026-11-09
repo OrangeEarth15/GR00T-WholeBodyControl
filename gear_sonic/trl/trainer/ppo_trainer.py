@@ -2059,7 +2059,7 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
             for name, param in model.named_parameters():
                 if param.grad is not None and not torch.isfinite(param.grad).all():
                     print(  # noqa: T201
-                        f"[Rank {self.accelerator.process_index}] NaN/Inf grad in {name}, norm={param.grad.norm():.3e}"
+                        f"[Rank {self.accelerator.process_index}] NaN/Inf grad in {name}, norm={param.grad.norm():.3e}"  # noqa: E501
                     )
                     break
             self.optimizer.zero_grad()
