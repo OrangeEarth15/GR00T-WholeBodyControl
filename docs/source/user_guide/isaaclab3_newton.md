@@ -50,6 +50,7 @@ Append these overrides to the usual training, eval or export commands:
 | `manager_env.config.newton.ground_friction` | 0.3 | Newton combines friction with max(); the ground sits at the low end of the robot's randomized range |
 | `manager_env.config.newton.use_cuda_graph` | True | the physics step is a CUDA graph |
 | `manager_env.config.newton.gap` | 0.01 | contact detection distance [m]; most of the trimesh collision cost scales with it. 0.002 made training iterations 1.15x faster (1 substep) and left the released checkpoint's eval unchanged (96.1% vs 96.4%, within error) |
+| `manager_env.config.newton.graph_decimation` | False | capture all physics steps of a control step in one CUDA graph. Isaac Lab 3.0 does this by itself only for robots with non-implicit actuators. Same throughput and eval on its own (the GPU had no gaps between the per-step graphs), but `sim.step` no longer blocks the CPU, which overlapping post-processing with physics needs. Changes the update rate of sensor histories (contact forces) and of finite-difference joint accelerations from per physics step to per control step |
 | `manager_env.config.fused_rewards` | False | evaluate the tracking reward set in one Warp kernel; `fused_rewards_check=True` compares it with the stock terms |
 
 ## Known differences on Newton
