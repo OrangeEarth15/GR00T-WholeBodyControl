@@ -866,7 +866,7 @@ class ManagerEnvWrapper:
         # This prevents a false large rate penalty on the first step of a new episode
         # Only applies when action_transform_module is used (buffers created in reset())
         reset_mask = dones.bool()
-        if reset_mask.any() and hasattr(self.env, "_prev_meta_action"):
+        if hasattr(self.env, "_prev_meta_action") and reset_mask.any():  # no host sync without ATM
             self.env._prev_meta_action[reset_mask] = 0.0  # noqa: SLF001
             self.env._last_meta_action[reset_mask] = 0.0  # noqa: SLF001
             self.env._prev_full_latent[reset_mask] = 0.0  # noqa: SLF001
@@ -969,16 +969,16 @@ class ManagerEnvWrapper:
                 )
 
             eps_mean = self._motion_lib.adp_samp_num_episodes.mean()
-            if eps_mean > 0:
-                extras["to_log"]["adp_samp/episodes_max_over_mean"] = (
-                    self._motion_lib.adp_samp_num_episodes.max() / eps_mean
-                )
+            # torch.where instead of a Python branch on a GPU value (one host sync per step)
+            extras["to_log"]["adp_samp/episodes_max_over_mean"] = torch.where(
+                eps_mean > 0,
+                self._motion_lib.adp_samp_num_episodes.max() / eps_mean,
+                torch.zeros_like(eps_mean),
+            )
         new_obs = self.process_raw_obs(obs_dict, flatten_dict_obs=True)
         # Store obs for action_transform_module when obs_dict is not provided in next step()
         self._last_obs_dict = new_obs
         self.extras = extras
-        # Store env_actions for callbacks (e.g., MultiLatentSaveCallback)
-        extras["env_actions"] = env_actions.detach().cpu()
         return new_obs, rew, dones, extras
 
     def get_env_data(self, key):

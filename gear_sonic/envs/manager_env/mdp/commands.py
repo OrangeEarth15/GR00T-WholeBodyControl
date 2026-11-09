@@ -3200,6 +3200,11 @@ class TrackingCommand(CommandTerm):
                 table_root_pose = torch.cat([table_pos, table_quat], dim=-1)
                 table.write_root_pose_to_sim(table_root_pose, env_ids=env_ids)
 
+        self._update_relative_body_frames()
+
+    def _update_relative_body_frames(self):
+        """Reference body poses re-expressed around the robot anchor (xy and heading from the robot,
+        height from the reference), for all envs. Used by the relative-body rewards and terminations."""
         anchor_pos_w_repeat = self.anchor_pos_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
         anchor_quat_w_repeat = self.anchor_quat_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
         robot_anchor_pos_w_repeat = self.robot_anchor_pos_w[:, None, :].repeat(
@@ -3244,7 +3249,13 @@ class TrackingCommand(CommandTerm):
             self.time_steps + self.motion_start_time_steps
             >= self.motion_lib.get_time_step_total(self.motion_ids)
         )[0]
-        self._resample_command(env_ids)
+        # Clips that end here have almost always been reset by time_out already, so env_ids is
+        # usually empty; skip the full resample (state writes, full-size random draws) then and
+        # only refresh the relative body frames it would have recomputed.
+        if len(env_ids) > 0:
+            self._resample_command(env_ids)
+        else:
+            self._update_relative_body_frames()
 
         # Exponential moving average update for running_ref_root_height.
         # ZL this should be moved to the recorders???
