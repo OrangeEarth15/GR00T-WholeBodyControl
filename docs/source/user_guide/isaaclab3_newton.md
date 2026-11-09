@@ -61,6 +61,26 @@ Append these overrides to the usual training, eval or export commands:
 - Contacts within the shape gap (1 cm by default) are generated; the gap drives most of the
   collision cost on the trimesh terrain.
 
+## Fine-tuning the released checkpoint on one GPU
+
+The released checkpoint was trained on 128 GPUs, and its stored learning rate is the adaptive minimum (1e-5).
+Fine-tuning it on one GPU with the default PPO settings (actor learning rate 2e-5, adaptive range [1e-5, 2e-4],
+desired KL 0.01) makes it worse on either backend: on PhysX the eval success rate drops from 97.2% to 93.6% after
+1000 iterations. A step about five times smaller keeps it improving:
+
+```sh
+++algo.config.actor_learning_rate=5e-6 ++algo.config.adaptive_lr_min=2e-6 \
+++algo.config.adaptive_lr_max=2e-5 ++algo.config.desired_kl=0.003
+```
+
+With these settings, 500 iterations on Newton (2 substeps) raised the eval success rate on PhysX from 97.2% to
+98.1% and lowered the local MPJPE by 1.9 mm. Leg and global position errors grow (+3 mm and +16 mm at 500
+iterations) and keep drifting in longer runs, so compare the checkpoints from 500 to 1000 iterations and check the
+legs before deploying one.
+
+When resuming with `+resume=True`, set `algo.config.num_learning_iterations` to the absolute iteration count
+(for example 41550 + 2000): training stops once the global step reaches it.
+
 ## Measured on one H100 PCIe, 4096 envs (2026-11-09)
 
 | Stack | s / iteration | Eval success rate, released checkpoint, 4096 motions |
