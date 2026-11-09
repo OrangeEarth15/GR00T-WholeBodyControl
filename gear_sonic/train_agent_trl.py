@@ -146,6 +146,12 @@ def create_manager_env(config, device, headless, env_instance_cfg):
     env = ManagerBasedRLEnv(
         cfg=env_instance_cfg, render_mode="rgb_array" if not headless else None
     )
+    if env_instance_cfg.config.get("fused_rewards", False):
+        from gear_sonic.envs.manager_env.mdp.fused_rewards import FusedRewardManager
+
+        env.reward_manager = FusedRewardManager(
+            env.cfg.rewards, env, check=env_instance_cfg.config.get("fused_rewards_check", False)
+        )
 
     env = ManagerEnvWrapper(env, env_instance_cfg.config)
     return env
