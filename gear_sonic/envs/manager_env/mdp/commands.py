@@ -16,7 +16,7 @@ from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.markers.config import DEFORMABLE_TARGET_MARKER_CFG
 import isaaclab.sim as sim_utils
 from isaaclab.utils import configclass
-from isaaclab.utils.math import (
+from gear_sonic.isaac_utils.math_wxyz import (
     matrix_from_quat,
     quat_apply,
     quat_apply_yaw,
@@ -25,6 +25,8 @@ from isaaclab.utils.math import (
     quat_inv,
     quat_mul,
     sample_uniform,
+    wxyz_from_xyzw,
+    xyzw_from_wxyz,
 )
 import numpy as np
 import torch
@@ -2303,27 +2305,27 @@ class TrackingCommand(CommandTerm):
 
     @property
     def robot_joint_pos(self) -> torch.Tensor:
-        return self.robot.data.joint_pos
+        return self.robot.data.joint_pos.torch
 
     @property
     def robot_joint_vel(self) -> torch.Tensor:
-        return self.robot.data.joint_vel
+        return self.robot.data.joint_vel.torch
 
     @property
     def robot_body_pos_w(self) -> torch.Tensor:
-        return self.robot.data.body_pos_w[:, self.body_indexes]
+        return self.robot.data.body_pos_w.torch[:, self.body_indexes]
 
     @property
     def robot_body_quat_w(self) -> torch.Tensor:
-        return self.robot.data.body_quat_w[:, self.body_indexes]
+        return wxyz_from_xyzw(self.robot.data.body_quat_w.torch[:, self.body_indexes])
 
     @property
     def robot_body_lin_vel_w(self) -> torch.Tensor:
-        return self.robot.data.body_lin_vel_w[:, self.body_indexes]
+        return self.robot.data.body_lin_vel_w.torch[:, self.body_indexes]
 
     @property
     def robot_body_ang_vel_w(self) -> torch.Tensor:
-        return self.robot.data.body_ang_vel_w[:, self.body_indexes]
+        return self.robot.data.body_ang_vel_w.torch[:, self.body_indexes]
 
     @property
     def robot_anchor_pos_w(self) -> torch.Tensor:
@@ -2338,7 +2340,7 @@ class TrackingCommand(CommandTerm):
             return self.motion_lib.get_root_pos_w(
                 self.motion_ids, self.motion_start_time_steps + self.time_steps
             )
-        return self.robot.data.body_pos_w[:, self.robot_anchor_body_index]
+        return self.robot.data.body_pos_w.torch[:, self.robot_anchor_body_index]
 
     @property
     def robot_anchor_quat_w(self) -> torch.Tensor:
@@ -2358,37 +2360,37 @@ class TrackingCommand(CommandTerm):
             if self.ref_motion_root_rotation_noise is not None:
                 ref_root_quat = quat_mul(ref_root_quat, self.ref_motion_root_rotation_noise)
             return ref_root_quat
-        return self.robot.data.body_quat_w[:, self.robot_anchor_body_index]
+        return wxyz_from_xyzw(self.robot.data.body_quat_w.torch[:, self.robot_anchor_body_index])
 
     @property
     def robot_anchor_lin_vel_w(self) -> torch.Tensor:
         assert not getattr(
             self, "_offline", False
         ), "robot_anchor_lin_vel_w is not available in offline mode"
-        return self.robot.data.body_lin_vel_w[:, self.robot_anchor_body_index]
+        return self.robot.data.body_lin_vel_w.torch[:, self.robot_anchor_body_index]
 
     @property
     def robot_anchor_ang_vel_w(self) -> torch.Tensor:
         assert not getattr(
             self, "_offline", False
         ), "robot_anchor_ang_vel_w is not available in offline mode"
-        return self.robot.data.body_ang_vel_w[:, self.robot_anchor_body_index]
+        return self.robot.data.body_ang_vel_w.torch[:, self.robot_anchor_body_index]
 
     @property
     def robot_vr_3point_quat_w(self) -> torch.Tensor:
-        return self.robot.data.body_quat_w[:, self.vr_3point_body_indices]
+        return wxyz_from_xyzw(self.robot.data.body_quat_w.torch[:, self.vr_3point_body_indices])
 
     @property
     def robot_reward_point_body_pos_w(self) -> torch.Tensor:
-        return self.robot.data.body_pos_w[:, self.reward_point_body_indices] + quat_apply(
-            self.robot.data.body_quat_w[:, self.reward_point_body_indices],
+        return self.robot.data.body_pos_w.torch[:, self.reward_point_body_indices] + quat_apply(
+            wxyz_from_xyzw(self.robot.data.body_quat_w.torch[:, self.reward_point_body_indices]),
             self.reward_point_body_offsets,
         )
 
     @property
     def robot_vr_3point_pos_w(self) -> torch.Tensor:
-        return self.robot.data.body_pos_w[:, self.vr_3point_body_indices] + quat_apply(
-            self.robot.data.body_quat_w[:, self.vr_3point_body_indices], self.vr_3point_body_offsets
+        return self.robot.data.body_pos_w.torch[:, self.vr_3point_body_indices] + quat_apply(
+            wxyz_from_xyzw(self.robot.data.body_quat_w.torch[:, self.vr_3point_body_indices]), self.vr_3point_body_offsets
         )
 
     @property
@@ -2853,6 +2855,12 @@ class TrackingCommand(CommandTerm):
         Args:
             env_ids: Environment indices being reset.
         """
+        # Isaac Lab 3.0 passes slice(None) on a full reset and int32 ids from step(); the code
+        # below needs an int64 index tensor (len, boolean masking, env_ids[0]).
+        if isinstance(env_ids, slice):
+            env_ids = torch.arange(self.num_envs, device=self.device)[env_ids]
+        elif isinstance(env_ids, torch.Tensor):
+            env_ids = env_ids.long()
         self.time_steps[env_ids] = 0
         # Variable frames: resample per-env num_frames at episode reset
         if self.variable_frames_enabled and len(env_ids) > 0:
@@ -3060,23 +3068,21 @@ class TrackingCommand(CommandTerm):
                 *self.cfg.joint_velocity_range, joint_vel.shape, joint_vel.device
             )
 
-        soft_joint_pos_limits = self.robot.data.soft_joint_pos_limits[env_ids]
+        soft_joint_pos_limits = self.robot.data.soft_joint_pos_limits.torch[env_ids]
         joint_pos[env_ids] = torch.clip(
             joint_pos[env_ids], soft_joint_pos_limits[:, :, 0], soft_joint_pos_limits[:, :, 1]
         )
 
         ####### Resetting Humaonid States #######
-        self.robot.write_joint_state_to_sim(joint_pos[env_ids], joint_vel[env_ids], env_ids=env_ids)
-        self.robot.write_root_state_to_sim(
-            torch.cat(
-                [
-                    root_pos[env_ids],
-                    root_ori[env_ids],
-                    root_lin_vel[env_ids],
-                    root_ang_vel[env_ids],
-                ],
-                dim=-1,
-            ),
+        self.robot.write_joint_position_to_sim_index(position=joint_pos[env_ids], env_ids=env_ids)
+        self.robot.write_joint_velocity_to_sim_index(velocity=joint_vel[env_ids], env_ids=env_ids)
+        # Isaac Lab 3.0 writes quaternions as (x, y, z, w); SONIC keeps (w, x, y, z)
+        self.robot.write_root_pose_to_sim_index(
+            root_pose=torch.cat([root_pos[env_ids], xyzw_from_wxyz(root_ori[env_ids])], dim=-1),
+            env_ids=env_ids,
+        )
+        self.robot.write_root_velocity_to_sim_index(
+            root_velocity=torch.cat([root_lin_vel[env_ids], root_ang_vel[env_ids]], dim=-1),
             env_ids=env_ids,
         )
         # Handle object positioning
@@ -3248,8 +3254,8 @@ class TrackingCommand(CommandTerm):
         )
 
         if self.cfg.use_height_map:
-            root_pos_w = self.robot.data.root_pos_w
-            root_quat_w = self.robot.data.root_quat_w
+            root_pos_w = self.robot.data.root_pos_w.torch
+            root_quat_w = wxyz_from_xyzw(self.robot.data.root_quat_w.torch)
 
             ray_starts_w = root_pos_w.unsqueeze(1).expand(-1, self.num_rays, -1)
             root_quat_expanded = (
@@ -3535,8 +3541,8 @@ class ForceTrackingCommand(CommandTerm):
             [self.waist_deps_ids, self.left_eef_deps_ids, self.right_eef_deps_ids]
         )
 
-        self.kp = self.robot.data.joint_stiffness.clone()
-        self.kd = self.robot.data.joint_damping.clone()
+        self.kp = self.robot.data.joint_stiffness.torch.clone()
+        self.kd = self.robot.data.joint_damping.torch.clone()
 
         self.force_update_frequency = self.cfg.force_update_frequency
         self.max_force = self.cfg.max_force

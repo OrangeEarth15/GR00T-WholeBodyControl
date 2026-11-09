@@ -29,12 +29,12 @@ def check_python(training=False):
     v = sys.version_info
     version_str = f"{v.major}.{v.minor}.{v.micro}"
     if training:
-        ok = v.major == 3 and v.minor == 11
+        ok = v.major == 3 and v.minor == 12
         return check(
             "Python version",
             ok,
             msg_pass=version_str,
-            msg_fail=f"{version_str} (training requires 3.11.x — Isaac Lab requirement)",
+            msg_fail=f"{version_str} (training requires 3.12.x — Isaac Lab 3.0 requirement)",
         )
     else:
         ok = v.major == 3 and v.minor >= 10

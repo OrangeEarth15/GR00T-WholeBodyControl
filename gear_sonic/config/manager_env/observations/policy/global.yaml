@@ -18,36 +18,36 @@ concatenate_terms: True
 # define noise for certain terms
 motion_anchor_pos_b:
   noise:
-    _target_: isaaclab.utils.noise.AdditiveUniformNoiseCfg
+    _target_: isaaclab.utils.noise.UniformNoiseCfg
     n_min: -0.25
     n_max: 0.25
 
 motion_anchor_ori_b:
   noise:
-    _target_: isaaclab.utils.noise.AdditiveUniformNoiseCfg
+    _target_: isaaclab.utils.noise.UniformNoiseCfg
     n_min: -0.05
     n_max: 0.05
 
 base_lin_vel:
   noise:
-    _target_: isaaclab.utils.noise.AdditiveUniformNoiseCfg
+    _target_: isaaclab.utils.noise.UniformNoiseCfg
     n_min: -0.5
     n_max: 0.5
 
 base_ang_vel:
   noise:
-    _target_: isaaclab.utils.noise.AdditiveUniformNoiseCfg
+    _target_: isaaclab.utils.noise.UniformNoiseCfg
     n_min: -0.2
     n_max: 0.2
 
 joint_pos:
   noise:
-    _target_: isaaclab.utils.noise.AdditiveUniformNoiseCfg
+    _target_: isaaclab.utils.noise.UniformNoiseCfg
     n_min: -0.01
     n_max: 0.01
 
 joint_vel:
   noise:
-    _target_: isaaclab.utils.noise.AdditiveUniformNoiseCfg
+    _target_: isaaclab.utils.noise.UniformNoiseCfg
     n_min: -0.5
     n_max: 0.5

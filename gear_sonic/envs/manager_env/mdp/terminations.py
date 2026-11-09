@@ -6,7 +6,7 @@ from collections.abc import Sequence
 import re
 from typing import TYPE_CHECKING
 
-import isaaclab.utils.math as math_utils
+import gear_sonic.isaac_utils.math_wxyz as math_utils
 import torch
 
 if TYPE_CHECKING:
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import ManagerTermBase, SceneEntityCfg, TerminationTermCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import (
+from gear_sonic.isaac_utils.math_wxyz import (
     axis_angle_from_quat,
     quat_apply_inverse,
     quat_conjugate,

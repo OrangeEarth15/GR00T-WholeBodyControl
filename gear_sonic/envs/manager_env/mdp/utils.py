@@ -33,7 +33,8 @@ def debug_visualize_object_projection(
         show_predicted: Whether to also visualize predicted object position (in red)
     """
     import cv2
-    from isaaclab.utils.math import (
+    from gear_sonic.isaac_utils.math_wxyz import (
+    wxyz_from_xyzw,
         quat_apply,
         quat_apply_inverse,
         quat_conjugate,
@@ -62,19 +63,19 @@ def debug_visualize_object_projection(
         if object_name is not None and "d435_link" in env.scene["robot"].body_names:
             robot = env.scene["robot"]
             object_asset = env.scene[object_name]
-            device = robot.data.root_pos_w.device
+            device = robot.data.root_pos_w.torch.device
 
             # Step 1: Object position in robot base frame
             obj_pos_w = object_asset.data.root_pos_w[debug_env_idx]
-            robot_pos_w = robot.data.root_pos_w[debug_env_idx]
-            robot_quat_w = robot.data.root_quat_w[debug_env_idx]
+            robot_pos_w = robot.data.root_pos_w.torch[debug_env_idx]
+            robot_quat_w = wxyz_from_xyzw(robot.data.root_quat_w.torch[debug_env_idx])
             obj_rel_w = obj_pos_w - robot_pos_w
             obj_pos_base = quat_apply_inverse(robot_quat_w.unsqueeze(0), obj_rel_w.unsqueeze(0))[0]
 
             # Step 2: d435_link pose in robot base frame
             link_idx = robot.body_names.index("d435_link")
-            link_pos_w = robot.data.body_link_pos_w[debug_env_idx, link_idx]
-            link_quat_w = robot.data.body_link_quat_w[debug_env_idx, link_idx]
+            link_pos_w = robot.data.body_link_pos_w.torch[debug_env_idx, link_idx]
+            link_quat_w = wxyz_from_xyzw(robot.data.body_link_quat_w.torch[debug_env_idx, link_idx])
             link_rel_w = link_pos_w - robot_pos_w
             link_pos_base = quat_apply_inverse(robot_quat_w.unsqueeze(0), link_rel_w.unsqueeze(0))[
                 0

@@ -18,8 +18,8 @@ authors = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "numpy==1.26.4",
-    "scipy==1.15.3",
+    "numpy>=1.26",
+    "scipy>=1.15",
     "torch>=2.4.0",
     "joblib",
     "tqdm",
@@ -103,6 +103,7 @@ training = [
     "smpl_sim @ git+https://github.com/ZhengyiLuo/SMPLSim.git",
     "open3d",
     "vector_quantize_pytorch",
+    "tensordict",
 ]
 
 [tool.setuptools.packages.find]

@@ -22,24 +22,24 @@ concatenate_terms: false
 
 motion_anchor_ori_heading_mf_nonflat:
   noise:
-    _target_: isaaclab.utils.noise.AdditiveUniformNoiseCfg
+    _target_: isaaclab.utils.noise.UniformNoiseCfg
     n_min: -0.05
     n_max: 0.05
 
 motion_anchor_ori_heading:
   noise:
-    _target_: isaaclab.utils.noise.AdditiveUniformNoiseCfg
+    _target_: isaaclab.utils.noise.UniformNoiseCfg
     n_min: -0.05
     n_max: 0.05
 
 smpl_joints_multi_future_local_nonflat:
   noise:
-    _target_: isaaclab.utils.noise.AdditiveUniformNoiseCfg
+    _target_: isaaclab.utils.noise.UniformNoiseCfg
     n_min: -0.05
     n_max: 0.05
 
 smpl_root_ori_heading_multi_future:
   noise:
-    _target_: isaaclab.utils.noise.AdditiveUniformNoiseCfg
+    _target_: isaaclab.utils.noise.UniformNoiseCfg
     n_min: -0.05
     n_max: 0.05

@@ -969,24 +969,7 @@ class ModularTrackingEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.dt = config.get("sim_dt", 0.005)
         self.sim.render_interval = self.decimation
         self.sim.physics_material = self.scene.terrain.physics_material
-        self.sim.physx.gpu_max_rigid_patch_count = 10 * 2**15
-
-        # Increase collision stack size for scenes with complex collision meshes (e.g. staircases)
-        gpu_collision_stack_size_exp = config.get("gpu_collision_stack_size_exp", 26)
-        self.sim.physx.gpu_collision_stack_size = 2**gpu_collision_stack_size_exp
-
-        # Increase PhysX GPU memory only for multi-object scenes
-        # These prevent "totalAggregatePairsCapacity" errors when many objects are spawned
-        # Check if object_usd_path is a directory (multi-object mode)
-        object_usd_path = config.get("object_usd_path", "")
-        if config.get("add_object", False) and (
-            isinstance(object_usd_path, list) or os.path.isdir(object_usd_path)
-        ):
-            # With proper Z-spacing of initial positions, collision pairs should be minimal
-            # These are moderate values that should work for 1000+ envs
-            self.sim.physx.gpu_found_lost_pairs_capacity = 2**24  # ~16M
-            self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 2**24
-            self.sim.physx.gpu_total_aggregate_pairs_capacity = 2**21  # ~2M
+        self.sim.physics = self._physics_cfg(config)
 
         # Viewer settings
         viewer_config = config.get("viewer", {})
@@ -1012,6 +995,20 @@ class ModularTrackingEnvCfg(ManagerBasedRLEnvCfg):
         self.scene.robot = robot_mapping[robot_type]["robot_cfg"].replace(
             prim_path="{ENV_REGEX_NS}/Robot"
         )
+        # The Isaac Lab 3.0 URDF importer ignores replace_cylinders_with_capsules, so load the USD
+        # that Isaac Lab 2.3.2 converted (sonic_il3/p0_probe/freeze_g1_usd.py) to keep the
+        # training collision geometry. Both physics backends use it.
+        frozen_usd = config["robot"].get("frozen_usd", None)
+        if frozen_usd:
+            urdf_spawn = self.scene.robot.spawn
+            self.scene.robot = self.scene.robot.replace(
+                spawn=sim_utils.UsdFileCfg(
+                    usd_path=frozen_usd,
+                    activate_contact_sensors=urdf_spawn.activate_contact_sensors,
+                    rigid_props=urdf_spawn.rigid_props,
+                    articulation_props=urdf_spawn.articulation_props,
+                )
+            )
         self.actions.joint_pos.scale = robot_mapping[config["robot"].get("type", "g1")][
             "action_scale"
         ]
@@ -1039,3 +1036,58 @@ class ModularTrackingEnvCfg(ManagerBasedRLEnvCfg):
             self.curriculum.force_push_linear_curriculum.params["modify_fn"] = getattr(
                 module, "linear_curriculum"
             )
+
+    def _physics_cfg(self, config):
+        """PhysX with the settings SONIC was trained with (default), or Newton MJWarp (Isaac Lab 3.0)."""
+        backend = config.get("physics_backend", "physx")
+        if backend == "physx":
+            from isaaclab_physx.physics import PhysxCfg
+
+            physx = PhysxCfg(
+                gpu_max_rigid_patch_count=10 * 2**15,
+                # Increase collision stack size for complex collision meshes (e.g. staircases)
+                gpu_collision_stack_size=2 ** config.get("gpu_collision_stack_size_exp", 26),
+            )
+            # Multi-object scenes: prevent "totalAggregatePairsCapacity" errors
+            object_usd_path = config.get("object_usd_path", "")
+            if config.get("add_object", False) and (
+                isinstance(object_usd_path, list) or os.path.isdir(object_usd_path)
+            ):
+                physx.gpu_found_lost_pairs_capacity = 2**24  # ~16M
+                physx.gpu_found_lost_aggregate_pairs_capacity = 2**24
+                physx.gpu_total_aggregate_pairs_capacity = 2**21  # ~2M
+            return physx
+        if backend != "newton":
+            raise ValueError(f"Unknown physics_backend: {backend}")
+
+        from isaaclab_newton.physics import (
+            MJWarpSolverCfg,
+            NewtonCfg,
+            NewtonCollisionPipelineCfg,
+            NewtonShapeCfg,
+        )
+
+        newton = config.get("newton", {})
+        # MuJoCo combines contact friction with max(), PhysX here with multiply: a ground at the
+        # bottom of the robot friction randomization range leaves the robot-side sample in charge.
+        ground = newton.get("ground_friction", 0.3)
+        self.scene.terrain.physics_material = self.scene.terrain.physics_material.replace(
+            static_friction=ground, dynamic_friction=ground
+        )
+        # Starting point: Isaac Lab 3.0 rough-terrain locomotion preset (RoughPhysicsCfg.newton_mjwarp)
+        return NewtonCfg(
+            solver_cfg=MJWarpSolverCfg(
+                njmax=newton.get("njmax", 1000),
+                nconmax=newton.get("nconmax", 300),
+                cone="pyramidal",
+                impratio=1.0,
+                integrator="implicitfast",
+                use_mujoco_contacts=False,
+            ),
+            collision_cfg=NewtonCollisionPipelineCfg(
+                max_triangle_pairs=newton.get("max_triangle_pairs", 2_500_000)
+            ),
+            num_substeps=newton.get("num_substeps", 2),
+            use_cuda_graph=newton.get("use_cuda_graph", True),
+            default_shape_cfg=NewtonShapeCfg(margin=0.0, ke=160000.0, kd=1100.0),
+        )

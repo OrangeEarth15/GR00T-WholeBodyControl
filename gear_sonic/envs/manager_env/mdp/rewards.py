@@ -6,7 +6,8 @@ from typing import TYPE_CHECKING
 
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import (
+from gear_sonic.isaac_utils.math_wxyz import (
+    wxyz_from_xyzw,
     quat_apply,
     quat_error_magnitude,
     quat_inv,
@@ -129,7 +130,7 @@ def upright_penalty(
     total_penalty = torch.zeros(env.num_envs, device=env.device)
     for name in body_names:
         body_idx = robot.body_names.index(name)
-        body_quat = robot.data.body_quat_w[:, body_idx]
+        body_quat = wxyz_from_xyzw(robot.data.body_quat_w.torch[:, body_idx])
         g_local = quat_apply(quat_inv(body_quat), command.down_dir)
         total_penalty += g_local[:, 0] ** 2 + g_local[:, 1] ** 2
 
@@ -258,7 +259,7 @@ def energy_consumption(
     else:
         robot_name = getattr(asset_cfg, "name", "robot")
     robot = env.scene[robot_name]
-    return torch.abs(robot.data.applied_torque * robot.data.joint_vel).sum(dim=-1)
+    return torch.abs(robot.data.applied_torque * robot.data.joint_vel.torch).sum(dim=-1)
 
 
 def tracking_local_head_ori_error(

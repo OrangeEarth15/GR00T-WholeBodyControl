@@ -182,68 +182,6 @@ def main(override_config: omegaconf.OmegaConf):
         config.algo.config.world_size = accelerator.num_processes
     rl_utils_common.seeding(config.seed)
 
-    def _pick_display_gpu_index(default_idx: int = 0) -> int:
-        try:
-            out = subprocess.check_output(
-                ["nvidia-smi", "--query-gpu=index,display_active,name", "--format=csv,noheader"],
-                text=True,
-            )
-            for line in out.strip().splitlines():
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) >= 2:
-                    idx, active = int(parts[0]), parts[1].lower()
-                    if active.startswith("enabled") or active.startswith("on"):
-                        return idx
-        except Exception:  # noqa: S110, BLE001
-            pass
-        return default_idx
-
-    render_gpu_idx = _pick_display_gpu_index(default_idx=0)
-
-    if simulator_type == "IsaacSim":
-        try:
-            with open("./rl/simulator/isaacsim/.isaacsim_version", encoding="utf-8") as f:
-                DEFAULT_ISAACSIM_VERSION = f.read().strip()
-        except FileNotFoundError:
-            DEFAULT_ISAACSIM_VERSION = "4.5"
-
-        if DEFAULT_ISAACSIM_VERSION == "4.5":
-            from isaaclab.app import AppLauncher
-        elif DEFAULT_ISAACSIM_VERSION == "4.2":
-            logger.warning("Using IsaacSim 4.2, replacing isaaclab with omni.isaac.lab")
-            from omni.isaac.lab.app import AppLauncher  # 4.2
-        import argparse
-
-        parser = argparse.ArgumentParser(description="Evaluate an RL agent with TRL.")
-        AppLauncher.add_app_launcher_args(parser)
-
-        args_cli, hydra_args = parser.parse_known_args()
-        sys.argv = [sys.argv[0]] + hydra_args  # noqa: RUF005
-        args_cli.num_envs = config.num_envs
-        args_cli.seed = config.seed
-        args_cli.env_spacing = env_config.config.env_spacing
-        args_cli.output_dir = config.output_dir
-        args_cli.enable_cameras = env_config.config.get(
-            "render_results", False
-        ) or env_config.config.get("enable_cameras", False)
-
-        args_cli.headless = config.headless
-        args_cli.multi_gpu = config.multi_gpu
-        args_cli.distributed = config.multi_gpu
-        args_cli.device = device
-
-        base_kit_args = (
-            "--/log/level=error --/log/fileLogLevel=error --/log/outputStreamLevel=error"
-        )
-        if args_cli.headless:
-            args_cli.kit_args = base_kit_args + " --no-window"
-        else:
-            args_cli.kit_args = base_kit_args + f" --/renderer/activeGpu={render_gpu_idx}"
-
-        _lock_path = "/tmp/isaaclab_app_launcher.lock"  # noqa: S108
-        with filelock.FileLock(_lock_path):
-            app_launcher = AppLauncher(args_cli)
-        simulation_app = app_launcher.app  # noqa: F841
 
     import torch
 
@@ -368,7 +306,18 @@ def main(override_config: omegaconf.OmegaConf):
                     if "motion_lib_cfg" in env_config.commands.motion:
                         env_config.commands.motion.motion_lib_cfg.filter_motion_keys = filter_keys
 
-    env = train_agent_trl.create_manager_env(config, device, args_cli)
+    # Isaac Lab 3.0: launch_simulation() decides from the env config whether Kit is needed
+    # (PhysX, RTX cameras) or the run is kit-less (Newton); see train_agent_trl.main.
+    from isaaclab.app import launch_simulation
+
+    env_instance_cfg = train_agent_trl.custom_instantiate(config.manager_env)
+    env_instance_cfg.sim.device = device
+    sim_runtime = contextlib.ExitStack()
+    with filelock.FileLock("/tmp/isaaclab_app_launcher.lock"):  # noqa: S108
+        sim_runtime.enter_context(
+            launch_simulation(env_instance_cfg, {"device": device, "distributed": config.multi_gpu})
+        )
+    env = train_agent_trl.create_manager_env(config, device, config.headless, env_instance_cfg)
 
     module_dim_dict = getattr(config.algo.config, "module_dim", {})
     policy_backbone_kwargs = {}

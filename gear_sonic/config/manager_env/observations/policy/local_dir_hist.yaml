@@ -16,28 +16,28 @@ concatenate_terms: True
 gravity_dir:
   history_length: ${actor_prop_history_length}
   noise:
-    _target_: isaaclab.utils.noise.AdditiveUniformNoiseCfg
+    _target_: isaaclab.utils.noise.UniformNoiseCfg
     n_min: -0.05
     n_max: 0.05
 
 base_ang_vel:
   history_length: ${actor_prop_history_length}
   noise:
-    _target_: isaaclab.utils.noise.AdditiveUniformNoiseCfg
+    _target_: isaaclab.utils.noise.UniformNoiseCfg
     n_min: -0.2
     n_max: 0.2
 
 joint_pos:
   history_length: ${actor_prop_history_length}
   noise:
-    _target_: isaaclab.utils.noise.AdditiveUniformNoiseCfg
+    _target_: isaaclab.utils.noise.UniformNoiseCfg
     n_min: -0.01
     n_max: 0.01
 
 joint_vel:
   history_length: ${actor_prop_history_length}
   noise:
-    _target_: isaaclab.utils.noise.AdditiveUniformNoiseCfg
+    _target_: isaaclab.utils.noise.UniformNoiseCfg
     n_min: -0.5
     n_max: 0.5
 

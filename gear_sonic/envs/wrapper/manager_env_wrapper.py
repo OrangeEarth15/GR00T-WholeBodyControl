@@ -2,7 +2,6 @@ from typing import TYPE_CHECKING  # noqa: I001
 
 import numpy as np
 from omegaconf import OmegaConf
-import omni
 from pxr import Gf, UsdGeom
 import torch
 from loguru import logger
@@ -454,7 +453,9 @@ class ManagerEnvWrapper:
             logger.info(f"  Pitch range: ±{pitch_range:.3f} rad ({np.degrees(pitch_range):.1f}°)")
             logger.info(f"  Yaw range: ±{yaw_range:.3f} rad ({np.degrees(yaw_range):.1f}°)")
 
-        stage = omni.usd.get_context().get_stage()
+        from isaaclab.sim.utils import get_current_stage  # works with and without Kit
+
+        stage = get_current_stage()
 
         for env_id in range(self.env.scene.num_envs):
             camera_prim_path = f"/World/envs/env_{env_id}/Robot/{camera_attached_link}/ego_camera"

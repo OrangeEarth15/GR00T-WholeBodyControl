@@ -5,6 +5,8 @@ from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets.articulation import ArticulationCfg
 import isaaclab.sim as sim_utils
 
+from gear_sonic.envs.env_utils.joint_utils import G1_ISAACLab_ORDER
+
 ASSET_DIR = "gear_sonic/data/assets"
 
 ARMATURE_5020 = 0.003609725
@@ -235,6 +237,11 @@ G1_CYLINDER_MODEL_12_DEX_CFG = ArticulationCfg(
         joint_vel={".*": 0.0},
     ),
     soft_joint_pos_limit_factor=0.9,
+    # Pin the Isaac Lab 2.3 PhysX order: the motion library, observations, released checkpoints and
+    # the deploy stack (policy_parameters.hpp) all index joints and bodies by it. Newton's native
+    # order differs, and Isaac Lab 3.0's "physx" alias is the OVPhysX order, not this one.
+    joint_ordering=tuple(G1_ISAACLab_ORDER),
+    body_ordering=tuple(G1_ISAACLAB_JOINTS),
     actuators={
         "legs": ImplicitActuatorCfg(
             joint_names_expr=[

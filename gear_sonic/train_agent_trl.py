@@ -41,6 +41,7 @@ except ImportError:
     )
     sys.exit(1)
 
+import contextlib
 import glob
 import logging
 import os
@@ -94,7 +95,7 @@ def resume_checkpoint(config):
     config.checkpoint = config.checkpoint
 
 
-def create_manager_env(config, device, args_cli):
+def create_manager_env(config, device, headless, env_instance_cfg):
 
     # import wandb
 
@@ -103,8 +104,6 @@ def create_manager_env(config, device, args_cli):
     )
 
     from gear_sonic.envs.wrapper.manager_env_wrapper import ManagerEnvWrapper
-
-    env_instance_cfg = custom_instantiate(config.manager_env)
 
     # Iteratively check the difference in attribute of env_instance_cfg1 and env_instance_cfg, print out the difference
     def compare_attrs(obj1, obj2, prefix=""):
@@ -143,9 +142,9 @@ def create_manager_env(config, device, args_cli):
 
     env_instance_cfg.seed = config.seed
     env_instance_cfg.sim.device = device
-    env_instance_cfg.config["headless"] = args_cli.headless
+    env_instance_cfg.config["headless"] = headless
     env = ManagerBasedRLEnv(
-        cfg=env_instance_cfg, render_mode="rgb_array" if not args_cli.headless else None
+        cfg=env_instance_cfg, render_mode="rgb_array" if not headless else None
     )
 
     env = ManagerEnvWrapper(env, env_instance_cfg.config)
@@ -223,60 +222,6 @@ def main(config: OmegaConf):
             resume="allow",
         )
 
-    # Setup simulator similar to train_agent.py
-
-    if simulator_type == "IsaacSim":
-        try:
-            with open("./rl/simulator/isaacsim/.isaacsim_version", encoding="utf-8") as f:
-                DEFAULT_ISAACSIM_VERSION = f.read().strip()
-        except FileNotFoundError:
-            DEFAULT_ISAACSIM_VERSION = "4.5"
-
-        if DEFAULT_ISAACSIM_VERSION == "4.5":
-            from isaaclab.app import AppLauncher
-        elif DEFAULT_ISAACSIM_VERSION == "4.2":
-            logger.warning("Using IsaacSim 4.2, replacing isaaclab with omni.isaac.lab")
-            from omni.isaac.lab.app import AppLauncher  # 4.2
-
-            # from isaaclab.app import AppLauncher # not working
-            # from omni.isaac.lab.app import AppLauncher
-
-        import argparse
-
-        parser = argparse.ArgumentParser(description="Train an RL agent with TRL.")
-        AppLauncher.add_app_launcher_args(parser)
-
-        ######################################################### ZL: fix isaacsim 4.5 rendering #########################################################
-        args_cli, hydra_args = parser.parse_known_args()
-        sys.argv = [sys.argv[0]] + hydra_args
-        args_cli.num_envs = config.num_envs
-        args_cli.seed = config.seed
-        args_cli.env_spacing = env_config.config.env_spacing  # config.env_spacing
-        args_cli.output_dir = config.output_dir
-        # Enable cameras if enable_cameras, render_results, render_ego, or overview_camera is True
-        args_cli.enable_cameras = (
-            env_config.config.get("enable_cameras", False)
-            or env_config.config.get("render_results", False)
-            or env_config.config.get("render_ego", False)
-            or env_config.config.get("overview_camera", False)
-        )
-        args_cli.headless = config.headless
-        args_cli.multi_gpu = config.multi_gpu
-        args_cli.distributed = config.multi_gpu
-        args_cli.device = device
-
-        # Base kit args (quiet logs)
-        args_cli.kit_args = (
-            "--/log/level=error --/log/fileLogLevel=error --/log/outputStreamLevel=error"
-        )
-
-        # AppLauncher can't handle multiple processes creating it at the same time so we need a lock
-        _lock_path = "/tmp/isaaclab_app_launcher.lock"
-        _local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        with FileLock(_lock_path):
-            app_launcher = AppLauncher(args_cli)
-
-        simulation_app = app_launcher.app
 
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
@@ -318,7 +263,19 @@ def main(config: OmegaConf):
     env_config.config.save_rendering_dir = str(Path(config.experiment_dir) / "renderings_training")
     env_config.config.experiment_dir = str(Path(config.experiment_dir))
 
-    env = create_manager_env(config, device, args_cli)
+    # Isaac Lab 3.0: launch_simulation() reads the env config to decide whether Isaac Sim (Kit) is
+    # needed (PhysX, RTX cameras) or the run is kit-less (Newton), so the config is built first.
+    from isaaclab.app import launch_simulation
+
+    env_instance_cfg = custom_instantiate(config.manager_env)
+    env_instance_cfg.sim.device = device
+    sim_runtime = contextlib.ExitStack()
+    # Kit cannot start in several processes at the same time
+    with FileLock("/tmp/isaaclab_app_launcher.lock"):
+        sim_runtime.enter_context(
+            launch_simulation(env_instance_cfg, {"device": device, "distributed": config.multi_gpu})
+        )
+    env = create_manager_env(config, device, config.headless, env_instance_cfg)
     if config.get("replay", False):
         _save_video_path = config.get("replay_save_video", None)
         env.run_replay(
