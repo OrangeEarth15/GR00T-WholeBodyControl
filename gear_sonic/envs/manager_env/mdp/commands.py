@@ -1297,9 +1297,16 @@ class TrackingCommand(CommandTerm):
         Returns:
             Root quaternions rotated to Z-up frame, ``(N, 4)``.
         """
-        base_rot = torch_transform.angle_axis_to_quaternion(
-            torch.tensor([[np.pi / 2, 0.0, 0.0]]).to(root_quat_y_up)
-        )
+        # constant: build it once (the CPU tensor + .to() was a blocking copy on every call)
+        base_rot = self.__dict__.get("_smpl_ytoz_base_rot")
+        if base_rot is None or (base_rot.dtype, base_rot.device) != (
+            root_quat_y_up.dtype,
+            root_quat_y_up.device,
+        ):
+            base_rot = torch_transform.angle_axis_to_quaternion(
+                torch.tensor([[np.pi / 2, 0.0, 0.0]]).to(root_quat_y_up)
+            )
+            self._smpl_ytoz_base_rot = base_rot
         root_quat_z_up = rotations.quat_mul(
             base_rot.repeat(root_quat_y_up.shape[0], 1), root_quat_y_up, w_last=False
         )
@@ -1724,9 +1731,9 @@ class TrackingCommand(CommandTerm):
 
     @property
     def joint_pos_lower_body_multi_future(self) -> torch.Tensor:
-        return self.motion_lib.get_dof_pos(self.future_motion_ids, self.future_time_steps)[
-            ..., self.lower_joint_isaaclab_indices
-        ].view(self.num_envs, -1)
+        values = self.motion_lib.get_dof_pos(self.future_motion_ids, self.future_time_steps)
+        lower = _device_index(self.lower_joint_isaaclab_indices, values.device)
+        return values[..., lower].view(self.num_envs, -1)
 
     @property
     def joint_vel(self) -> torch.Tensor:
@@ -1776,9 +1783,9 @@ class TrackingCommand(CommandTerm):
 
     @property
     def joint_vel_lower_body_multi_future(self) -> torch.Tensor:
-        return self.motion_lib.get_dof_vel(self.future_motion_ids, self.future_time_steps)[
-            ..., self.lower_joint_isaaclab_indices
-        ].view(self.num_envs, -1)
+        values = self.motion_lib.get_dof_vel(self.future_motion_ids, self.future_time_steps)
+        lower = _device_index(self.lower_joint_isaaclab_indices, values.device)
+        return values[..., lower].view(self.num_envs, -1)
 
     @property
     def body_pos_w(self) -> torch.Tensor:
@@ -4309,6 +4316,21 @@ class ForceTrackingCommandCfg(CommandTermCfg):
         "right_wrist_roll_joint",
         "right_wrist_yaw_joint",
     ]
+
+
+_DEVICE_INDEX: dict = {}
+
+
+def _device_index(indices, device) -> torch.Tensor:
+    """Device copy of a Python index list, built once per (contents, device).
+
+    Indexing a CUDA tensor with a Python list copies the list host-to-device, a blocking copy, on every call.
+    """
+    key = (tuple(indices), str(device))
+    index = _DEVICE_INDEX.get(key)
+    if index is None:
+        index = _DEVICE_INDEX[key] = torch.tensor(key[0], dtype=torch.long, device=device)
+    return index
 
 
 def _get_body_indexes(command: TrackingCommand, body_names: list[str] | None) -> torch.Tensor:

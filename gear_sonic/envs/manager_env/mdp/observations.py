@@ -1561,7 +1561,7 @@ def joint_pos_multi_future_select_joints_for_smpl(
     joint_pos = command.joint_pos_multi_future_for_smpl
     # Flatten case: (num_envs, num_future_frames * num_joints)
     joint_pos_reshaped = joint_pos.view(env.num_envs, command.smpl_num_future_frames, -1)
-    joint_pos_selected = joint_pos_reshaped[..., joints_idx]
+    joint_pos_selected = joint_pos_reshaped[..., commands._device_index(joints_idx, joint_pos.device)]
     return joint_pos_selected
 
 
@@ -1585,7 +1585,7 @@ def joint_pos_multi_future_select_joints_for_smpl(  # noqa: F811
     joint_pos = command.joint_pos_multi_future_for_smpl
     # Flatten case: (num_envs, num_future_frames * num_joints)
     joint_pos_reshaped = joint_pos.view(env.num_envs, command.smpl_num_future_frames, -1)
-    joint_pos_selected = joint_pos_reshaped[..., joints_idx]
+    joint_pos_selected = joint_pos_reshaped[..., commands._device_index(joints_idx, joint_pos.device)]
     return joint_pos_selected
 
 
