@@ -111,6 +111,7 @@ Documentation
    user_guide/training
    user_guide/training_data
    user_guide/new_embodiments
+   user_guide/isaaclab3_newton
 
 .. toctree::
    :maxdepth: 2
