@@ -2480,25 +2480,22 @@ class MotionLibBase:
 
         time_steps = self.adp_samp_length_starts[dataset_motion_ids] + motion_time_steps
 
-        # Handle non-unique dataset_motion_ids by counting occurrences
+        # Count occurrences per bin (ids repeat across envs). index_add_ into fixed-size vectors
+        # instead of bincount, whose CUDA path reads the max id back to the host, and failures
+        # counted through the mask instead of a failure.any() branch: no host syncs, same counts.
         if len(time_steps) > 0:
-            # Use bincount to count occurrences of each unique ID
             bin_ids = self.adp_samp_frame_to_bin[time_steps]
-            counts = torch.bincount(bin_ids, minlength=self.adp_samp_num_bins)
+            counts = torch.zeros(
+                self.adp_samp_num_bins, device=bin_ids.device, dtype=torch.float32
+            ).index_add_(0, bin_ids, torch.ones_like(bin_ids, dtype=torch.float32))
             counts = counts / self.adp_samp_bin_motion_length
             self.adp_samp_num_episodes += counts
 
-        # Update failure counts for failed motions
-        if failure.any():
-            failed_time_steps = time_steps[failure]
-            # Handle non-unique failed motion IDs by counting occurrences
-            if len(failed_time_steps) > 0:
-                bin_ids = self.adp_samp_frame_to_bin[failed_time_steps]
-                failure_counts = torch.bincount(bin_ids, minlength=self.adp_samp_num_bins)
-                failure_counts_multiplier = self.adaptive_sampling_cfg.get(
-                    "failure_counts_multiplier", 1
-                )
-                self.adp_samp_num_failures += failure_counts * failure_counts_multiplier
+            failure_counts = torch.zeros(
+                self.adp_samp_num_bins, device=bin_ids.device, dtype=torch.float32
+            ).index_add_(0, bin_ids, failure.to(torch.float32))
+            failure_counts_multiplier = self.adaptive_sampling_cfg.get("failure_counts_multiplier", 1)
+            self.adp_samp_num_failures += failure_counts * failure_counts_multiplier
 
     def sync_and_compute_adaptive_sampling(self, accelerator=None, sync_across_gpus=False):
         """Synchronize adaptive sampling stats across GPUs and recompute probabilities.

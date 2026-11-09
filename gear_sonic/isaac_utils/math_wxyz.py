@@ -355,10 +355,13 @@ def subtract_frame_transforms(
 
 
 def wxyz_from_xyzw(q: torch.Tensor) -> torch.Tensor:
-    """Isaac Lab 3.0 data quaternion (x, y, z, w) -> SONIC (w, x, y, z)."""
-    return q[..., [3, 0, 1, 2]]
+    """Isaac Lab 3.0 data quaternion (x, y, z, w) -> SONIC (w, x, y, z).
+
+    roll instead of q[..., [3, 0, 1, 2]]: a Python-list index is copied host-to-device (a sync) on every call.
+    """
+    return q.roll(1, dims=-1)
 
 
 def xyzw_from_wxyz(q: torch.Tensor) -> torch.Tensor:
     """SONIC (w, x, y, z) -> Isaac Lab 3.0 write quaternion (x, y, z, w)."""
-    return q[..., [1, 2, 3, 0]]
+    return q.roll(-1, dims=-1)

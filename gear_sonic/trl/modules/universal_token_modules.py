@@ -890,8 +890,10 @@ class UniversalTokenModule(nn.Module):
             all_tokens = all_tokens + residual_reshaped
 
         # Cache tokens for external access (e.g., by callbacks)
-        self._last_encoded_tokens = {k: v.detach().cpu() for k, v in encoded_tokens.items()}
-        self._last_encoded_latents = {k: v.detach().cpu() for k, v in encoded_latents.items()}
+        # kept on device: .cpu() here was a blocking copy on every forward pass, and nothing in
+        # this repo reads these
+        self._last_encoded_tokens = {k: v.detach() for k, v in encoded_tokens.items()}
+        self._last_encoded_latents = {k: v.detach() for k, v in encoded_latents.items()}
 
         # Cache flattened full latent on device for reward computation (token smoothness)
         # all_tokens is the post-quantization token that gets sent to decoder

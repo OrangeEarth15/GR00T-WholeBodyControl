@@ -2052,16 +2052,18 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
         args = self.args
         model = self.model
 
-        # Check for NaN/Inf in gradients
-        for name, param in model.named_parameters():
-            if param.grad is not None and (
-                torch.isnan(param.grad).any() or torch.isinf(param.grad).any()
-            ):
-                print(  # noqa: T201
-                    f"[Rank {self.accelerator.process_index}] NaN/Inf grad in {name}, norm={param.grad.norm():.3e}"
-                )
-                self.optimizer.zero_grad()
-                return None
+        # Check for NaN/Inf in gradients: one host sync for all parameters, the per-parameter
+        # loop (one sync each) only runs to name the offender
+        grads = [param.grad for param in model.parameters() if param.grad is not None]
+        if grads and not torch.stack([torch.isfinite(grad).all() for grad in grads]).all():
+            for name, param in model.named_parameters():
+                if param.grad is not None and not torch.isfinite(param.grad).all():
+                    print(  # noqa: T201
+                        f"[Rank {self.accelerator.process_index}] NaN/Inf grad in {name}, norm={param.grad.norm():.3e}"
+                    )
+                    break
+            self.optimizer.zero_grad()
+            return None
         grad_norm = None
         if args.max_grad_norm is not None and args.max_grad_norm > 0:
             # deepspeed does its own clipping

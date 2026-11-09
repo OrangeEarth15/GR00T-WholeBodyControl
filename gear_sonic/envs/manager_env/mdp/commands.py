@@ -159,6 +159,14 @@ class TrackingCommand(CommandTerm):
         self.reward_point_body_indices_motion = [
             self.cfg.body_names.index(name) for name in self.cfg.reward_point_body
         ]
+        # Device copies for the per-step properties: indexing a CUDA tensor with a Python list
+        # copies the list host-to-device, a blocking copy, on every access.
+        self._vr_3point_idx = torch.tensor(self.vr_3point_body_indices, device=self.device)
+        self._vr_3point_idx_motion = torch.tensor(self.vr_3point_body_indices_motion, device=self.device)
+        self._reward_point_idx = torch.tensor(self.reward_point_body_indices, device=self.device)
+        self._reward_point_idx_motion = torch.tensor(
+            self.reward_point_body_indices_motion, device=self.device
+        )
 
         self.down_dir = (
             torch.tensor([0.0, 0.0, -1.0], dtype=torch.float32, device=self.device)
@@ -2231,18 +2239,18 @@ class TrackingCommand(CommandTerm):
     def vr_3point_body_quat_w(self) -> torch.Tensor:
         return self.motion_lib.get_body_quat_w(
             self.motion_ids, self.motion_start_time_steps + self.time_steps
-        )[:, self.vr_3point_body_indices_motion]
+        )[:, self._vr_3point_idx_motion]
 
     @property
     def reward_point_body_quat_w(self) -> torch.Tensor:
         return self.motion_lib.get_body_quat_w(
             self.motion_ids, self.motion_start_time_steps + self.time_steps
-        )[:, self.reward_point_body_indices_motion]
+        )[:, self._reward_point_idx_motion]
 
     @property
     def vr_3point_body_quat_w_multi_future(self) -> torch.Tensor:
         return self.motion_lib.get_body_quat_w(self.future_motion_ids, self.future_time_steps)[
-            :, self.vr_3point_body_indices_motion
+            :, self._vr_3point_idx_motion
         ].view(self.num_envs, self.num_future_frames, len(self.cfg.vr_3point_body), -1)
 
     @property
@@ -2255,7 +2263,7 @@ class TrackingCommand(CommandTerm):
     def reward_point_body_pos_w(self) -> torch.Tensor:
         reward_point_original = self.motion_lib.get_body_pos_w(
             self.motion_ids, self.motion_start_time_steps + self.time_steps
-        )[:, self.reward_point_body_indices_motion]
+        )[:, self._reward_point_idx_motion]
         return (
             reward_point_original
             + quat_apply(self.reward_point_body_quat_w, self.reward_point_body_offsets)
@@ -2274,7 +2282,7 @@ class TrackingCommand(CommandTerm):
         """
         vr_3point_original = self.motion_lib.get_body_pos_w(
             self.motion_ids, self.motion_start_time_steps + self.time_steps
-        )[:, self.vr_3point_body_indices_motion]
+        )[:, self._vr_3point_idx_motion]
         return (
             vr_3point_original
             + quat_apply(self.vr_3point_body_quat_w, self.vr_3point_body_offsets)
@@ -2290,7 +2298,7 @@ class TrackingCommand(CommandTerm):
         """
         vr_3point_original = self.motion_lib.get_body_pos_w(
             self.future_motion_ids, self.future_time_steps
-        )[:, self.vr_3point_body_indices_motion].view(
+        )[:, self._vr_3point_idx_motion].view(
             self.num_envs, self.num_future_frames, len(self.cfg.vr_3point_body), -1
         )
         vr_3point_offset_extend = self.vr_3point_body_offsets.unsqueeze(1).repeat(
@@ -2378,19 +2386,19 @@ class TrackingCommand(CommandTerm):
 
     @property
     def robot_vr_3point_quat_w(self) -> torch.Tensor:
-        return wxyz_from_xyzw(self.robot.data.body_quat_w.torch[:, self.vr_3point_body_indices])
+        return wxyz_from_xyzw(self.robot.data.body_quat_w.torch[:, self._vr_3point_idx])
 
     @property
     def robot_reward_point_body_pos_w(self) -> torch.Tensor:
-        return self.robot.data.body_pos_w.torch[:, self.reward_point_body_indices] + quat_apply(
-            wxyz_from_xyzw(self.robot.data.body_quat_w.torch[:, self.reward_point_body_indices]),
+        return self.robot.data.body_pos_w.torch[:, self._reward_point_idx] + quat_apply(
+            wxyz_from_xyzw(self.robot.data.body_quat_w.torch[:, self._reward_point_idx]),
             self.reward_point_body_offsets,
         )
 
     @property
     def robot_vr_3point_pos_w(self) -> torch.Tensor:
-        return self.robot.data.body_pos_w.torch[:, self.vr_3point_body_indices] + quat_apply(
-            wxyz_from_xyzw(self.robot.data.body_quat_w.torch[:, self.vr_3point_body_indices]), self.vr_3point_body_offsets
+        return self.robot.data.body_pos_w.torch[:, self._vr_3point_idx] + quat_apply(
+            wxyz_from_xyzw(self.robot.data.body_quat_w.torch[:, self._vr_3point_idx]), self.vr_3point_body_offsets
         )
 
     @property
