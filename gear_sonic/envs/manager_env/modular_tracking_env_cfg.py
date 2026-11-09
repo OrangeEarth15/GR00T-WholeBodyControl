@@ -1091,5 +1091,9 @@ class ModularTrackingEnvCfg(ManagerBasedRLEnvCfg):
             # 5 ms) tracks closer to its PhysX numbers with it (eval SR 96.4% vs 95.0% with 2 substeps)
             num_substeps=newton.get("num_substeps", 1),
             use_cuda_graph=newton.get("use_cuda_graph", True),
-            default_shape_cfg=NewtonShapeCfg(margin=0.0, ke=160000.0, kd=1100.0),
+            # gap: contact detection distance; it sets how many terrain triangles each collider is
+            # tested against (gap 2 mm makes the trimesh physics ~1.4x faster, see the 3.0 guide)
+            default_shape_cfg=NewtonShapeCfg(
+                margin=0.0, gap=newton.get("gap", 0.01), ke=160000.0, kd=1100.0
+            ),
         )
