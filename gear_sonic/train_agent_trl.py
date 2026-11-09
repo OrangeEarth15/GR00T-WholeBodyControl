@@ -146,6 +146,14 @@ def create_manager_env(config, device, headless, env_instance_cfg):
     env = ManagerBasedRLEnv(
         cfg=env_instance_cfg, render_mode="rgb_array" if not headless else None
     )
+    if env_instance_cfg.config.get("newton", {}).get("graph_decimation", False):
+        # Implicit-only robots never opt into Newton's all-graphable path, so the env launches one
+        # physics graph per decimation step. Opt in here to capture the whole decimation loop as one graph.
+        physics = env.sim.physics_manager
+        physics.activate_newton_actuator_path()
+        physics.set_decimation(env.cfg.decimation)
+        env._physics_handles_decimation = physics.handles_decimation()
+        print(f"[newton] graph_decimation: handles_decimation={env._physics_handles_decimation}")
     if env_instance_cfg.config.get("fused_rewards", False):
         from gear_sonic.envs.manager_env.mdp.fused_rewards import FusedRewardManager
 
