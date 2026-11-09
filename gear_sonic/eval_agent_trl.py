@@ -30,7 +30,8 @@ except ImportError:
     import sys
     sys.exit(1)
 
-import filelock  # noqa: I001
+import contextlib  # noqa: I001
+import filelock
 import json
 import os
 import shutil
@@ -99,6 +100,14 @@ def main(override_config: omegaconf.OmegaConf):
             raw = raw.replace("groot/rl/data/", "gear_sonic/data/")
             raw = raw.replace("assets/bm/unitree_description/", "assets/robot_description/")
             raw = raw.replace("1215_bones_seed_filtered", "bones_seed_smpl")
+            # Configs saved with Isaac Lab 2.x (e.g. the released checkpoint)
+            raw = raw.replace(
+                "isaaclab.utils.noise.AdditiveUniformNoiseCfg", "isaaclab.utils.noise.UniformNoiseCfg"
+            )
+            raw = raw.replace(
+                "gear_sonic.envs.manager_env.mdp:randomize_rigid_body_com",
+                "isaaclab.envs.mdp:randomize_rigid_body_com",
+            )
             import io
             train_config = omegaconf.OmegaConf.load(io.StringIO(raw))
 

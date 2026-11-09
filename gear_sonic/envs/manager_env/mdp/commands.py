@@ -4303,21 +4303,33 @@ class ForceTrackingCommandCfg(CommandTermCfg):
     ]
 
 
-def _get_body_indexes(command: TrackingCommand, body_names: list[str] | None) -> list[int]:
+def _get_body_indexes(command: TrackingCommand, body_names: list[str] | None) -> torch.Tensor:
     """Return indices into command.cfg.body_names for the requested subset.
+
+    The index tensor is built once per subset and kept on the command's device: indexing with a
+    Python list copies the list host-to-device (a blocking copy) on every call, several times
+    per step across the reward and termination terms.
 
     Args:
         command: TrackingCommand instance whose cfg.body_names defines the full body list.
         body_names: Subset of body names to select. If None, return all indices.
 
     Returns:
-        List of integer indices into ``command.cfg.body_names``.
+        Long tensor of indices into ``command.cfg.body_names`` on ``command.device``.
     """
-    return [
-        idx
-        for idx, body_name in enumerate(command.cfg.body_names)
-        if body_names is None or body_name in body_names
-    ]
+    cache = command.__dict__.setdefault("_body_index_cache", {})
+    key = None if body_names is None else tuple(body_names)
+    if key not in cache:
+        cache[key] = torch.tensor(
+            [
+                idx
+                for idx, body_name in enumerate(command.cfg.body_names)
+                if body_names is None or body_name in body_names
+            ],
+            dtype=torch.long,
+            device=command.device,
+        )
+    return cache[key]
 
 
 # Backward compat — remove after all checkpoints migrated
