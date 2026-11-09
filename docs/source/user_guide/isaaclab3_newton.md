@@ -46,7 +46,7 @@ Append these overrides to the usual training, eval or export commands:
 | Override | Default | Notes |
 |---|---|---|
 | `manager_env.config.physics_backend` | `physx` | `newton` selects MJWarp with Newton's collision pipeline |
-| `manager_env.config.newton.num_substeps` | 2 | solver substeps per 5 ms physics step; 1 is faster and, for the released checkpoint, closer to PhysX |
+| `manager_env.config.newton.num_substeps` | 1 | solver substeps per 5 ms physics step; 1 is faster than 2 and, for the released checkpoint, closer to PhysX |
 | `manager_env.config.newton.ground_friction` | 0.3 | Newton combines friction with max(); the ground sits at the low end of the robot's randomized range |
 | `manager_env.config.newton.use_cuda_graph` | True | the physics step is a CUDA graph |
 | `manager_env.config.fused_rewards` | False | evaluate the tracking reward set in one Warp kernel; `fused_rewards_check=True` compares it with the stock terms |

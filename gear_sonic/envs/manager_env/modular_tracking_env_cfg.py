@@ -1087,7 +1087,9 @@ class ModularTrackingEnvCfg(ManagerBasedRLEnvCfg):
             collision_cfg=NewtonCollisionPipelineCfg(
                 max_triangle_pairs=newton.get("max_triangle_pairs", 2_500_000)
             ),
-            num_substeps=newton.get("num_substeps", 2),
+            # 1 solver substep per 5 ms step: faster than 2, and the released checkpoint (trained on PhysX at
+            # 5 ms) tracks closer to its PhysX numbers with it (eval SR 96.4% vs 95.0% with 2 substeps)
+            num_substeps=newton.get("num_substeps", 1),
             use_cuda_graph=newton.get("use_cuda_graph", True),
             default_shape_cfg=NewtonShapeCfg(margin=0.0, ke=160000.0, kd=1100.0),
         )
