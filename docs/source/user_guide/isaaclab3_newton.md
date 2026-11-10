@@ -20,9 +20,13 @@ checkpoint was trained with; Newton is selected per run.
 
 ## Setup
 
-1. Install Isaac Lab 3.0 (v3.0.0) with uv. Newton training needs no Isaac Sim.
-2. Install SONIC into the same environment: `pip install -e "gear_sonic[training]"` (Python 3.12,
-   numpy 2).
+1. Run `bash install_scripts/install_isaaclab3.sh [<Isaac Lab dir>]`. It clones Isaac Lab v3.0.0 unless the
+   directory exists, creates its `.venv` from Isaac Lab's `uv.lock` (Python 3.12, torch 2.11 cu130, warp 1.17,
+   newton 1.6.1), and installs `gear_sonic[training]` into it with the versions in
+   `install_scripts/isaaclab3_constraints.txt`. Newton training needs no Isaac Sim; `ISAACSIM=1` also installs
+   Isaac Sim 6.2 for `physics_backend=physx`. Do not run `uv sync` in the Isaac Lab directory afterwards: it
+   restores Isaac Lab's Hydra 1.4, and SONIC's entry points need Hydra 1.3; run the script again instead.
+2. Activate the environment: `source <Isaac Lab dir>/.venv/bin/activate`.
 3. Fetch the G1 USD with `git lfs pull` (`gear_sonic/data/assets/robot_description/usd/g1/g1_sonic_newton.usd`).
    Isaac Lab 3.0 loads it by default instead of importing the URDF: its URDF importer ignores
    `replace_cylinders_with_capsules`, so this is the asset Isaac Lab 2.3.2 converted for training, with the mesh
