@@ -198,6 +198,10 @@ G1_ISAACLAB_TO_MUJOCO_MAPPING = {
     "mujoco_to_isaaclab_body": G1_MUJOCO_TO_ISAACLAB_BODY,
 }
 
+# G1_CYLINDER_MODEL_12_DEX_CFG as Isaac Lab 2.3.2 converts it (cylinders as capsules), flattened, with the mesh
+# collision APIs on the Mesh prims (gear_sonic/scripts/isaaclab3/). Isaac Lab 3.0 loads it instead of the URDF.
+G1_FROZEN_USD = f"{ASSET_DIR}/robot_description/usd/g1/g1_sonic_newton.usd"
+
 G1_CYLINDER_MODEL_12_DEX_CFG = ArticulationCfg(
     spawn=sim_utils.UrdfFileCfg(
         fix_base=False,

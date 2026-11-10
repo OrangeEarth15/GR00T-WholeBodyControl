@@ -983,6 +983,7 @@ class ModularTrackingEnvCfg(ManagerBasedRLEnvCfg):
                 "robot_cfg": g1.G1_CYLINDER_MODEL_12_DEX_CFG,
                 "action_scale": g1.G1_MODEL_12_ACTION_SCALE,
                 "isaaclab_to_mujoco_mapping": g1.G1_ISAACLAB_TO_MUJOCO_MAPPING,
+                "frozen_usd": g1.G1_FROZEN_USD,
             },
             "h2": {
                 "robot_cfg": h2.H2_CFG,
@@ -996,10 +997,12 @@ class ModularTrackingEnvCfg(ManagerBasedRLEnvCfg):
             prim_path="{ENV_REGEX_NS}/Robot"
         )
         # The Isaac Lab 3.0 URDF importer ignores replace_cylinders_with_capsules, so load the USD
-        # that Isaac Lab 2.3.2 converted (sonic_il3/p0_probe/freeze_g1_usd.py) to keep the
-        # training collision geometry. Both physics backends use it.
-        frozen_usd = config["robot"].get("frozen_usd", None)
+        # that Isaac Lab 2.3.2 converted (gear_sonic/scripts/isaaclab3/) to keep the training
+        # collision geometry. Both physics backends use it; frozen_usd: null imports the URDF.
+        frozen_usd = config["robot"].get("frozen_usd", robot_mapping[robot_type].get("frozen_usd"))
         if frozen_usd:
+            if os.path.getsize(frozen_usd) < 1024:
+                raise RuntimeError(f"{frozen_usd} is a git-lfs pointer: run `git lfs pull`")
             urdf_spawn = self.scene.robot.spawn
             self.scene.robot = self.scene.robot.replace(
                 spawn=sim_utils.UsdFileCfg(

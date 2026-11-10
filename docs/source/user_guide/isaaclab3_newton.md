@@ -23,24 +23,24 @@ checkpoint was trained with; Newton is selected per run.
 1. Install Isaac Lab 3.0 (v3.0.0) with uv. Newton training needs no Isaac Sim.
 2. Install SONIC into the same environment: `pip install -e "gear_sonic[training]"` (Python 3.12,
    numpy 2).
-3. Make the G1 USD once. The conversion step needs an Isaac Lab 2.3 install; the second step only
-   needs `pxr`:
+3. Fetch the G1 USD with `git lfs pull` (`gear_sonic/data/assets/robot_description/usd/g1/g1_sonic_newton.usd`).
+   Isaac Lab 3.0 loads it by default instead of importing the URDF: its URDF importer ignores
+   `replace_cylinders_with_capsules`, so this is the asset Isaac Lab 2.3.2 converted for training, with the mesh
+   collision APIs moved onto the Mesh prims (otherwise Newton skips the 18 hand and wrist mesh colliders).
+   `++manager_env.config.robot.frozen_usd=<path>` loads another USD, `=null` imports the URDF. To make it again
+   (the first step needs an Isaac Lab 2.3 install, the second only `pxr`):
 
    ```sh
    python gear_sonic/scripts/isaaclab3/freeze_g1_usd.py --out_dir <dir>              # Isaac Lab 2.3
    python gear_sonic/scripts/isaaclab3/newtonize_usd.py <dir>/g1_sonic.usd <dir>/g1_sonic_newton.usd
    ```
 
-   `newtonize_usd.py` moves the collision APIs from the importer's Xform onto the child Mesh;
-   without it Newton skips the 18 hand and wrist mesh colliders.
-
 ## Run
 
 Append these overrides to the usual training, eval or export commands:
 
 ```sh
-++manager_env.config.physics_backend=newton \
-++manager_env.config.robot.frozen_usd=<dir>/g1_sonic_newton.usd
+++manager_env.config.physics_backend=newton
 ```
 
 | Override | Default | Notes |
