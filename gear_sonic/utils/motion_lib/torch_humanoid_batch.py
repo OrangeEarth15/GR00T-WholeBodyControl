@@ -15,7 +15,6 @@ import numpy as np
 from omegaconf import DictConfig
 
 # import logging
-import open3d as o3d
 from rich.progress import track
 import scipy.ndimage.filters as filters
 from scipy.spatial.transform import Rotation as sRot
@@ -236,7 +235,8 @@ class Humanoid_Batch:
         self._idx_levels = _compute_idx_levels(self._parents)
 
         self._device = device
-        self.load_mesh()
+        # the meshes are only needed by mesh_fk; loaded on first use, as open3d has no aarch64 wheels
+        self.mesh_dict = None
 
     @property
     def device(self):
@@ -752,6 +752,8 @@ class Humanoid_Batch:
         return angular_velocity
 
     def load_mesh(self):
+        import open3d as o3d
+
         xml_base = os.path.dirname(self.mjcf_file)
         # Read the compiler tag from the g1.xml file to find if there is a meshdir defined
         tree = ETree.parse(self.mjcf_file)
@@ -827,6 +829,8 @@ class Humanoid_Batch:
         """
         Load the mesh from the XML file and merge them into the humanoid based on the current pose.
         """
+        if self.mesh_dict is None:
+            self.load_mesh()
         if pose is None:
             fk_res = self.fk_batch(
                 torch.zeros(1, 1, len(self.body_names_augment), 3), torch.zeros(1, 1, 3)

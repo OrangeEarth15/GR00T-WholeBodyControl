@@ -101,7 +101,7 @@ training = [
     "accelerate>=1.3.0",
     "tensorboard",
     "smpl_sim @ git+https://github.com/ZhengyiLuo/SMPLSim.git",
-    "open3d",
+    "open3d; platform_machine == 'x86_64'",  # no aarch64 wheels; only mesh_fk / fix_height use it
     "vector_quantize_pytorch",
     "tensordict",
 ]
