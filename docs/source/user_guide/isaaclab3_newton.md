@@ -222,6 +222,12 @@ legs before deploying one.
 When resuming with `+resume=True`, set `algo.config.num_learning_iterations` to the absolute iteration count
 (for example 41550 + 2000): training stops once the global step reaches it.
 
+On four GPUs (`accelerate launch --multi_gpu --num_processes 4`, 4096 envs each) the default step size works:
+2000 iterations on Newton (1 substep, 2 mm gap, every switch above) end at 96.68% on Newton and 97.44% on PhysX
+(one GPU with the default step: 92.4% and 92.9%), with 0.9-1.1 mm lower local MPJPE. Legs (+6 mm) and global position
+(+36 to 38 mm) drift about as much as with the small step over 2000 iterations, so watch them in any longer run.
+Throughput on four H100 PCIe is 91% of linear (2.64 s per iteration on one GPU, 2.90 s on four).
+
 ## Measured on one H100 PCIe, 4096 envs (2026-11-09)
 
 | Stack | s / iteration | Eval success rate, released checkpoint, 4096 motions |
