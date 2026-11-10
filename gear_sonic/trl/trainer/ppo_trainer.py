@@ -906,6 +906,7 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
         self.storage.clear()
 
         dones = torch.zeros(self.env.num_envs, device=device)
+        episode_ends = []
         with torch.no_grad():
             for i in range(self.num_steps_per_env):  # noqa: B007
                 # Compute the actions and values
@@ -964,12 +965,17 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
                 self._process_env_step(rewards, dones, infos)
                 self.cur_reward_sum += rewards_stored
                 self.cur_episode_length += 1
-                new_ids = (dones > 0).nonzero(as_tuple=False)
-                self.state.rewbuffer.extend(self.cur_reward_sum[new_ids].cpu().numpy().tolist())
-                self.state.lenbuffer.extend(self.cur_episode_length[new_ids].cpu().numpy().tolist())
-                self.cur_reward_sum[new_ids] = 0
-                self.cur_episode_length[new_ids] = 0
+                # finished episodes go to the host once per rollout instead of once per step
+                ended = dones > 0
+                episode_ends.append(
+                    (ended, self.cur_reward_sum.clone(), self.cur_episode_length.clone())
+                )
+                self.cur_reward_sum.masked_fill_(ended[:, None], 0)
+                self.cur_episode_length.masked_fill_(ended, 0)
 
+            ended, reward_sums, lengths = (torch.stack(x) for x in zip(*episode_ends))
+            self.state.rewbuffer.extend(reward_sums[ended][:, None].cpu().numpy().tolist())
+            self.state.lenbuffer.extend(lengths[ended][:, None].cpu().numpy().tolist())
             policy_model.clear_rollout()
             # gc.collect()
             # torch.cuda.empty_cache()
