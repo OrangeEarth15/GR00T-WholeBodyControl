@@ -362,10 +362,11 @@ class FusedRewardManager(RewardManager):
         return None
 
     def compute(self, dt: float) -> torch.Tensor:
+        if self._unsupported:  # _prepare_fused stopped before setting the command
+            return super().compute(dt)
         command = self._command
         if (
-            self._unsupported
-            or command is None
+            command is None
             or command.use_ref_motion_root_quat_w_as_anchor
             or getattr(command, "_offline", False)
         ):
