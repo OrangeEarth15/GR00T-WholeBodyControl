@@ -26,6 +26,8 @@ checkpoint was trained with; Newton is selected per run.
    `install_scripts/isaaclab3_constraints.txt`. Newton training needs no Isaac Sim; `ISAACSIM=1` also installs
    Isaac Sim 6.2 for `physics_backend=physx`. Do not run `uv sync` in the Isaac Lab directory afterwards: it
    restores Isaac Lab's Hydra 1.4, and SONIC's entry points need Hydra 1.3; run the script again instead.
+   The script also works on aarch64 hosts: open3d, which only the mesh utilities load (on first use), is
+   installed on x86_64 only.
 2. Activate the environment: `source <Isaac Lab dir>/.venv/bin/activate`.
 3. Fetch the G1 USD with `git lfs pull` (`gear_sonic/data/assets/robot_description/usd/g1/g1_sonic_newton.usd`).
    Isaac Lab 3.0 loads it by default instead of importing the URDF: its URDF importer ignores
@@ -62,6 +64,8 @@ Append these overrides to the usual training, eval or export commands:
 | `manager_env.config.fused_command` | False | the tracking command's relative body frames and metrics as one Warp kernel each; `fused_command_check=True` compares them with the torch versions |
 | `manager_env.config.fused_obs` | False | 13 tokenizer and critic observation terms as Warp kernels (SMPL, multi-future joints / root height / root orientation, anchor and body frames, VR points); `fused_obs_check=True` compares them with the stock terms |
 | `algo.config.actor.backbone.dense_routing` | False | run every encoder on the whole minibatch in the PPO update and evaluate the latent alignment losses under row masks: static shapes, no host syncs |
+| `algo.config.align_linear` | False | zero-pad the matmuls of Linear layers whose sizes are not multiples of 4, so cuBLAS uses its aligned TF32 kernels; parameters keep their shapes; see below |
+| `algo.config.bf16_autocast` | False | policy and critic under bf16 autocast, output layers in FP32; see below |
 
 ## Overlapping post-processing with physics
 
@@ -157,6 +161,20 @@ rows of a minibatch, about 1.6 times the encoder work, and the update gets slowe
 iteration), so it is off by default. Compiling the encoders and decoders with `torch.compile` did not help
 either (1.163 s against 1.165-1.171 s per iteration).
 
+### Matmul shapes and bf16 in the update
+
+About a fifth of the update's GPU time went to cuBLAS `align1` TF32 kernels, picked for four Linear layers
+whose sizes are not multiples of 4: the action decoder (994 inputs, 29 outputs), the teleop encoder's input
+layer (267) and the critic's input layer (1645). `algo.config.align_linear=True` pads their inputs, weights and
+outputs with zeros to multiples of 4 inside the forward; the parameters, checkpoints and ONNX exports keep their
+shapes. The update takes 1.04 s instead of 1.12 s per iteration (2.61 s against 2.69 s per iteration).
+
+`algo.config.bf16_autocast=True` runs the policy and critic forward and backward passes under bf16 autocast.
+The last Linear layer of each network (action means, values, latent heads) stays in FP32, as do the losses,
+optimizer and parameters. With `align_linear` the update takes 0.72 s instead of 1.04 s (2.28 s against
+2.61 s per iteration, two runs each on one node). It changes the numerics, so it is off by default until a
+fine-tune with it matches the FP32 one in the eval.
+
 ## Known differences on Newton
 
 - Friction is combined with max() instead of the multiply mode used with PhysX.
@@ -198,8 +216,10 @@ When resuming with `+resume=True`, set `algo.config.num_learning_iterations` to 
 | + 2 mm gap, `sync_free_step`, `graph_decimation` | 2.84 | 96.2% |
 | + `post_processing_graph` and the four `fused_*` switches | 2.78 | — |
 | + row-index routing and the total-norm gradient check in the update (always on) | 2.69 | — |
+| + `align_linear` | 2.61 | — |
+| + `bf16_autocast` | 2.28 | — |
 
-The last two rows were measured on another node of the same type (2.82 s there for the row above them).
+The last four rows were measured on another node of the same type (2.82 s there for the row above them).
 
 On motions both stacks track, the released checkpoint's local MPJPE differs from PhysX by
 +0.05 mm with 1 substep and +0.36 mm with 2 substeps.
