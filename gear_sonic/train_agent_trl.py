@@ -157,7 +157,7 @@ def create_manager_env(config, device, headless, env_instance_cfg):
     if env_instance_cfg.config.get("sync_free_step", False):
         from gear_sonic.envs.manager_env import sync_free
 
-        sync_free.enable(env)
+        sync_free.enable(env, graph=env_instance_cfg.config.get("post_processing_graph", False))
     if env_instance_cfg.config.get("fused_rewards", False):
         from gear_sonic.envs.manager_env.mdp.fused_rewards import FusedRewardManager
 
