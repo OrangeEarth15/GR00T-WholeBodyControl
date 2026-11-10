@@ -137,7 +137,6 @@ class UniversalTokenModule(nn.Module):
         active_encoders=None,  # Optional list of encoder names to activate (None = all)
         active_decoders=None,  # Optional list of decoder names to activate (None = all)
         dense_routing=False,
-        compile_modules=False,
         **kwargs,  # noqa: ARG002
     ):
         """Initialise encoders, FSQ quantizer, decoders, and auxiliary losses.
@@ -203,9 +202,6 @@ class UniversalTokenModule(nn.Module):
                 Same values and gradients as the boolean-indexed routing up to float rounding, with
                 static shapes and no host syncs, at the cost of encoding every row with every encoder.
                 Inference without gradients always routes this way.
-            compile_modules: Compile every encoder and decoder in place with ``torch.compile``
-                (fuses the norm / activation / residual kernels around the matmuls); with
-                dynamic batch sizes unless ``dense_routing`` fixes them.
             **kwargs: Absorbed for forward-compatibility.
         """
         super().__init__()
@@ -494,14 +490,6 @@ class UniversalTokenModule(nn.Module):
             for param in self.quantizer.parameters():
                 param.requires_grad = False
             logger.info("Froze quantizer")
-
-        if compile_modules:
-            # in place, so state_dict keys keep their names; indexed routing changes the batch size.
-            # Every encoder and decoder runs BaseModule.forward, and dynamo's recompile limit counts
-            # per code object: with the default 8, most module / grad-mode variants would run eager
-            torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, 128)
-            for module in list(self.encoders.values()) + list(self.decoders.values()):
-                module.compile(dynamic=not dense_routing)
 
         # Variable frame support: enabled when any encoder or decoder has mask observations
         self.variable_frames_enabled = any(
