@@ -520,6 +520,18 @@ def _compute_masked_loss(pred, gt, mask, loss_type="mse"):
     return masked.sum() / num_valid
 
 
+def _masked_pair_loss(pred, target, row_mask, loss_type="mse"):
+    """``loss_type`` between the rows of ``pred`` and ``target`` that ``row_mask`` selects, averaged as over just
+    those rows (0 when there are none). For latents that cover every row (``dense_routing``)."""
+    mask = row_mask.float()
+    if loss_type != "cosine":
+        return _compute_masked_loss(pred, target, mask, loss_type)
+    distance = 1 - F.cosine_similarity(pred, target, dim=-1)
+    while mask.dim() < distance.dim():
+        mask = mask.unsqueeze(-1)
+    return (distance * mask).sum() / mask.expand_as(distance).sum().clamp(min=1)
+
+
 # =============================================================================
 # Reconstruction Loss
 # =============================================================================
@@ -603,6 +615,10 @@ class G1SmplLatentLoss(nn.Module):
         # Get g1 latents that have corresponding smpl data
         g1_latents = encoded_latents["g1"]
         smpl_latents = encoded_latents["smpl"]
+        if loss_inputs.get("dense_routing"):
+            return _masked_pair_loss(
+                g1_latents, smpl_latents, encoder_masks["g1_has_smpl"], self.loss_type
+            )
 
         # Extract only the g1 samples that have corresponding smpl
         g1_latents_matched = g1_latents[encoder_masks["g1_has_smpl"]]
@@ -643,6 +659,10 @@ class TeleopSmplLatentLoss(nn.Module):
         # Get teleop and smpl latents
         tlp_latents = encoded_latents["teleop"]
         smpl_latents = encoded_latents["smpl"]
+        if loss_inputs.get("dense_routing"):
+            return _masked_pair_loss(
+                tlp_latents, smpl_latents, encoder_masks["teleop_has_smpl"], self.loss_type
+            )
 
         # teleop_has_smpl selects teleop samples that also have smpl active
         tlp_latents_matched = tlp_latents[encoder_masks["teleop_has_smpl"]]
@@ -692,6 +712,10 @@ class G1TeleopLatentLoss(nn.Module):
         # Get g1 and teleop latents
         g1_latents = encoded_latents["g1"]
         tlp_latents = encoded_latents["teleop"]
+        if loss_inputs.get("dense_routing"):
+            return _masked_pair_loss(
+                g1_latents, tlp_latents, encoder_masks["g1_has_teleop"], self.loss_type
+            )
 
         # g1_has_teleop selects g1 samples that also have teleop active
         g1_latents_matched = g1_latents[encoder_masks["g1_has_teleop"]]
@@ -741,6 +765,10 @@ class G1SomaLatentLoss(nn.Module):
         # Get g1 latents that have corresponding soma data
         g1_latents = encoded_latents["g1"]
         soma_latents = encoded_latents["soma"]
+        if loss_inputs.get("dense_routing"):
+            return _masked_pair_loss(
+                g1_latents, soma_latents, encoder_masks["g1_has_soma"], self.loss_type
+            )
 
         # Extract only the g1 samples that have corresponding soma
         g1_latents_matched = g1_latents[encoder_masks["g1_has_soma"]]
@@ -790,6 +818,10 @@ class ReencodedSmplG1LatentLoss(nn.Module):
 
         # Get g1 latents that have corresponding smpl data
         g1_latents = encoded_latents["g1"]
+        if loss_inputs.get("dense_routing"):
+            return _masked_pair_loss(
+                reencoded_smpl_g1_latents, g1_latents, encoder_masks["g1_has_smpl"], self.loss_type
+            )
         g1_latents_matched = g1_latents[encoder_masks["g1_has_smpl"]]
         if g1_latents_matched.shape[0] == 0:
             return torch.tensor(0.0, device=g1_latents.device)

@@ -30,6 +30,24 @@ def set_fuzzy_config_params(config, candidate_keys, value):
     return config
 
 
+def _dense_pair_masks(encoder_masks):
+    """The intersection masks of ``create_encoder_masks`` for latents that cover every row: rows where both
+    encoders of a pair are active."""
+    pairs = {
+        "g1_has_smpl": ("g1", "smpl"),
+        "teleop_has_smpl": ("teleop", "smpl"),
+        "smpl_has_teleop": ("smpl", "teleop"),
+        "g1_has_teleop": ("g1", "teleop"),
+        "teleop_has_g1": ("teleop", "g1"),
+        "g1_has_soma": ("g1", "soma"),
+    }
+    return {
+        name: encoder_masks[a] & encoder_masks[b]
+        for name, (a, b) in pairs.items()
+        if encoder_masks.get(a) is not None and encoder_masks.get(b) is not None
+    }
+
+
 class UniversalTokenModule(nn.Module):
     """SONIC-style action transform module (ATM) with FSQ token bottleneck.
 
@@ -95,6 +113,7 @@ class UniversalTokenModule(nn.Module):
         optimize_encoders_ratio_for_CHIP=False,  # CHIP compliance training optimization
         active_encoders=None,  # Optional list of encoder names to activate (None = all)
         active_decoders=None,  # Optional list of decoder names to activate (None = all)
+        dense_routing=False,
         **kwargs,  # noqa: ARG002
     ):
         """Initialise encoders, FSQ quantizer, decoders, and auxiliary losses.
@@ -155,10 +174,20 @@ class UniversalTokenModule(nn.Module):
                 run.  All encoders are active when ``None``.
             active_decoders: Optional list of decoder names to run during
                 forward.  All decoders are run when ``None``.
+            dense_routing: Also in training, run every encoder on the whole batch, pick each row's
+                tokens with ``torch.where`` and evaluate the latent alignment losses under row masks.
+                Same values and gradients as the boolean-indexed routing up to float rounding, with
+                static shapes and no host syncs, at the cost of encoding every row with every encoder.
+                Inference without gradients always routes this way.
             **kwargs: Absorbed for forward-compatibility.
         """
         super().__init__()
 
+        self.dense_routing = dense_routing
+        if dense_routing and optimize_encoders_ratio_for_CHIP:
+            raise NotImplementedError(
+                "dense_routing assumes the multi-hot encoder choice (no CHIP mode)"
+            )
         # Store freeze flags
         self.freeze_encoders = freeze_encoders
         self.freeze_decoders = freeze_decoders
@@ -851,10 +880,13 @@ class UniversalTokenModule(nn.Module):
         ]
         # Inference that only needs the action (rollout) runs every encoder on the whole batch and
         # picks rows with torch.where: the same tokens without the host syncs of boolean indexing.
-        dense_routing = not (
-            compute_aux_loss or return_dict or pre_quantization_residual or torch.is_grad_enabled()
+        # With self.dense_routing training does the same, and the aux losses read row masks.
+        dense_routing = not pre_quantization_residual and (
+            self.dense_routing or not (compute_aux_loss or return_dict or torch.is_grad_enabled())
         )
         encoder_masks = self.create_encoder_masks(tokenizer_obs, intersections=not dense_routing)
+        if dense_routing and compute_aux_loss:
+            encoder_masks.update(_dense_pair_masks(encoder_masks))
         encoded_tokens = {}
         encoded_latents = {}
         if pre_quantization_residual:
@@ -991,7 +1023,15 @@ class UniversalTokenModule(nn.Module):
             if smpl_encoder_name is not None and "g1" in encoded_latents:
                 smpl_mask = encoder_masks.get(smpl_encoder_name)
 
-                if smpl_mask is not None and smpl_mask.sum() > 0:
+                if dense_routing and smpl_mask is not None:
+                    # rows without SMPL drop out through the pair masks in the losses
+                    if "compliance" in tokenizer_obs:
+                        raise NotImplementedError(
+                            "dense_routing does not gate the aux losses by compliance"
+                        )
+                    smpl_latents = encoded_latents[smpl_encoder_name]
+                    has_stiff_samples = True
+                elif smpl_mask is not None and smpl_mask.sum() > 0:
                     smpl_latents = encoded_latents[smpl_encoder_name]
 
                     # Extract compliance values for these envs FIRST
@@ -1011,17 +1051,23 @@ class UniversalTokenModule(nn.Module):
                         has_stiff_samples = True
 
             # Only compute stiff-mode losses if there are stiff samples
+            # dense: the encoders already ran on every row
+            reuse_dense = dense_routing and frame_mask is None
+            routed_mask = None if dense_routing else smpl_mask
             if has_stiff_samples and smpl_mask is not None:
                 # Compute G1 latents for the same envs as SMPL (for proper pairing)
                 # OPTIMIZATION: Detach here since all downstream losses use g1 as
                 # fixed target (detach_g1_target=True). This avoids redundant gradient
                 # computation through the g1 encoder for these latents.
-                g1_latents_for_smpl = self.encode(
-                    encoder_name="g1",
-                    tokenizer_obs=tokenizer_obs,
-                    encoder_mask=smpl_mask,
-                    no_quantization=True,
-                ).detach()
+                if reuse_dense:
+                    g1_latents_for_smpl = encoded_latents["g1"].detach()
+                else:
+                    g1_latents_for_smpl = self.encode(
+                        encoder_name="g1",
+                        tokenizer_obs=tokenizer_obs,
+                        encoder_mask=routed_mask,
+                        no_quantization=True,
+                    ).detach()
 
                 paired_g1_smpl_latents = {
                     "g1": g1_latents_for_smpl,
@@ -1037,7 +1083,7 @@ class UniversalTokenModule(nn.Module):
                     reencoded_smpl_g1_latents = self.encode(
                         encoder_name="g1",
                         tokenizer_obs=decoded_outputs["g1_kin"],
-                        encoder_mask=smpl_mask,
+                        encoder_mask=routed_mask,
                         no_quantization=True,
                     )
 
@@ -1051,12 +1097,15 @@ class UniversalTokenModule(nn.Module):
                 # Compute teleop latents for the same envs as SMPL
                 # OPTIMIZATION: Detach here since TeleopSmplComplianceLatentLoss uses
                 # teleop as teacher (detach_teleop_target=True). Only SMPL learns.
-                teleop_latents_for_smpl = self.encode(
-                    encoder_name=teleop_encoder_name,
-                    tokenizer_obs=tokenizer_obs,
-                    encoder_mask=smpl_mask,
-                    no_quantization=True,
-                ).detach()
+                if reuse_dense:
+                    teleop_latents_for_smpl = encoded_latents[teleop_encoder_name].detach()
+                else:
+                    teleop_latents_for_smpl = self.encode(
+                        encoder_name=teleop_encoder_name,
+                        tokenizer_obs=tokenizer_obs,
+                        encoder_mask=routed_mask,
+                        no_quantization=True,
+                    ).detach()
 
                 paired_compliance_latents = {
                     "teleop": teleop_latents_for_smpl,
@@ -1084,6 +1133,8 @@ class UniversalTokenModule(nn.Module):
                 "paired_g1_smpl_latents": paired_g1_smpl_latents,
                 "paired_compliance_latents": paired_compliance_latents,
                 "original_g1_latents_for_reencode": original_g1_latents_for_reencode,
+                # latents cover every row; the pair masks in encoder_masks select the matched ones
+                "dense_routing": dense_routing,
             }
 
             for loss_name, loss_func in self.aux_loss_func.items():
