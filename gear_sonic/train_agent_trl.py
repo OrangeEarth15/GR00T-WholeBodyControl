@@ -413,6 +413,11 @@ def main(config: OmegaConf):
         raise ValueError("No longer supported")
 
     materialize_lazy_params(policy, env)
+    if config.algo.config.get("align_linear", False):
+        from gear_sonic.trl.modules.base_module import align_linear_layers
+
+        aligned = sum(align_linear_layers(m) for m in (policy, value_model) if m is not None)
+        logger.info(f"align_linear: padded the matmuls of {aligned} Linear layers")
 
     if config.algo.config.get("pretrained_model", None) is not None:
         pretrained_cfg = config.algo.config.pretrained_model

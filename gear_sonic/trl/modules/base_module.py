@@ -24,6 +24,38 @@ def get_norm(norm_type, dim):
         raise ValueError(f"Unsupported norm type: {norm_type}")
 
 
+class _AlignedLinear(nn.Linear):
+    """``nn.Linear`` whose matmul is zero-padded to sizes that are multiples of 4 (see
+    ``align_linear_layers``)."""
+
+    def forward(self, input):
+        pad_in = -self.in_features % 4
+        pad_out = -self.out_features % 4 if self.out_features >= 8 else 0
+        weight = nn.functional.pad(self.weight, (0, pad_in, 0, pad_out))
+        bias = None if self.bias is None else nn.functional.pad(self.bias, (0, pad_out))
+        output = nn.functional.linear(nn.functional.pad(input, (0, pad_in)), weight, bias)
+        return output[..., : self.out_features] if pad_out else output
+
+
+def align_linear_layers(module):
+    """Pad the matmuls of the Linear layers whose input size, or output size of 8 or more, is not a
+    multiple of 4.
+
+    cuBLAS runs FP32 / TF32 matmuls with such sizes on slower kernels that load one element at a
+    time (in SONIC: the action decoder's 994 inputs and 29 outputs, the teleop encoder's 267 inputs,
+    the critic's 1645 inputs). The padding is zeros, so the outputs and gradients are the same up to
+    float rounding; parameters and state_dict keep their shapes. Returns the number of layers changed.
+    """
+    count = 0
+    for layer in module.modules():
+        if type(layer) is nn.Linear and (
+            layer.in_features % 4 or (layer.out_features >= 8 and layer.out_features % 4)
+        ):
+            layer.__class__ = _AlignedLinear
+            count += 1
+    return count
+
+
 class ResidualBlock(nn.Module):
     """Single pre-activation residual block: ``x + Linear -> Norm -> Act(x)``.
 
