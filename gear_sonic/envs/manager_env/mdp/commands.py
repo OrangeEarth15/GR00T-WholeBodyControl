@@ -69,6 +69,11 @@ def _init_variable_frames(
     return per_env_num_frames, frame_choices
 
 
+def _masked_set(dst: torch.Tensor, mask: torch.Tensor, src: torch.Tensor):
+    """``dst[mask] = src[mask]`` in place, without the host sync of boolean indexing."""
+    torch.where(mask.view(-1, *([1] * (dst.dim() - 1))), src, dst, out=dst)
+
+
 @configclass
 class CommandsCfg:
     """Command specifications for the MDP."""
@@ -1288,6 +1293,16 @@ class TrackingCommand(CommandTerm):
         smpl_body_pose_6d = mat[..., :2].reshape(smpl_body_pose.shape[0], -1)
         return smpl_body_pose_6d
 
+    def remove_smpl_base_rot(self, quat: torch.Tensor) -> torch.Tensor:
+        """``rotations.remove_smpl_base_rot`` for (w, x, y, z) quaternions, with the constant built once."""
+        base_rot = self.__dict__.get("_smpl_base_rot_conj")
+        if base_rot is None or (base_rot.dtype, base_rot.device) != (quat.dtype, quat.device):
+            base_rot = rotations.quat_conjugate(
+                torch.tensor([[0.5, 0.5, 0.5, 0.5]]).to(quat), w_last=False
+            )
+            self._smpl_base_rot_conj = base_rot
+        return rotations.quat_mul(quat, base_rot.repeat(quat.shape[0], 1), w_last=False)
+
     def smpl_root_ytoz_up(self, root_quat_y_up: torch.Tensor) -> torch.Tensor:
         """Convert SMPL root quaternion from Y-up to Z-up convention.
 
@@ -1328,7 +1343,7 @@ class TrackingCommand(CommandTerm):
         root_quat = torch_transform.angle_axis_to_quaternion(smpl_pose[..., :3]).view(-1, 4)
         if self.motion_lib.smpl_y_up:
             root_quat = self.smpl_root_ytoz_up(root_quat)
-        root_quat = rotations.remove_smpl_base_rot(root_quat, w_last=False)
+        root_quat = self.remove_smpl_base_rot(root_quat)
         root_heading_inv = rotations.calc_heading_quat_inv(root_quat, w_last=False)
         root_quat_noheading = rotations.quat_mul(root_heading_inv, root_quat, w_last=False)
         smpl_pose[..., :3] = torch_transform.quaternion_to_angle_axis(root_quat_noheading).view(
@@ -1349,7 +1364,7 @@ class TrackingCommand(CommandTerm):
         root_quat = torch_transform.angle_axis_to_quaternion(smpl_pose[..., :3]).view(-1, 4)
         if self.motion_lib.smpl_y_up:
             root_quat = self.smpl_root_ytoz_up(root_quat)
-        root_quat = rotations.remove_smpl_base_rot(root_quat, w_last=False)
+        root_quat = self.remove_smpl_base_rot(root_quat)
         return root_quat
 
     @property
@@ -1365,7 +1380,7 @@ class TrackingCommand(CommandTerm):
         root_quat = torch_transform.angle_axis_to_quaternion(smpl_pose[..., :3]).view(-1, 4)
         if self.motion_lib.smpl_y_up:
             root_quat = self.smpl_root_ytoz_up(root_quat)
-        root_quat = rotations.remove_smpl_base_rot(root_quat, w_last=False).view(
+        root_quat = self.remove_smpl_base_rot(root_quat).view(
             self.num_envs, self.smpl_num_future_frames, 4
         )
         return root_quat
@@ -1386,7 +1401,7 @@ class TrackingCommand(CommandTerm):
         root_quat = torch_transform.angle_axis_to_quaternion(smpl_pose[..., :3]).view(-1, 4)
         if self.motion_lib.smpl_y_up:
             root_quat = self.smpl_root_ytoz_up(root_quat)
-        root_quat = rotations.remove_smpl_base_rot(root_quat, w_last=False)
+        root_quat = self.remove_smpl_base_rot(root_quat)
         root_rot_dif = quat_mul(
             quat_inv(
                 self.robot_anchor_quat_w.view(self.num_envs, 1, 4).repeat(
@@ -1416,7 +1431,7 @@ class TrackingCommand(CommandTerm):
         smpl_root_quat = torch_transform.angle_axis_to_quaternion(smpl_pose[..., :3]).view(-1, 4)
         if self.motion_lib.smpl_y_up:
             smpl_root_quat = self.smpl_root_ytoz_up(smpl_root_quat)
-        smpl_root_quat = rotations.remove_smpl_base_rot(smpl_root_quat, w_last=False)
+        smpl_root_quat = self.remove_smpl_base_rot(smpl_root_quat)
         smpl_root_quat = smpl_root_quat.view(self.num_envs, self.smpl_num_future_frames, 4)
         ref_first_heading = torch_transform.get_heading_q(smpl_root_quat[:, 0, :])
         root_rot_dif = quat_mul(
@@ -1447,7 +1462,7 @@ class TrackingCommand(CommandTerm):
         root_quat = torch_transform.angle_axis_to_quaternion(smpl_pose[..., :3]).view(-1, 4)
         if self.motion_lib.smpl_y_up:
             root_quat = self.smpl_root_ytoz_up(root_quat)
-        root_quat = rotations.remove_smpl_base_rot(root_quat, w_last=False)
+        root_quat = self.remove_smpl_base_rot(root_quat)
         root_rot_dif = quat_mul(
             quat_inv(
                 self.anchor_heading_quat.view(self.num_envs, 1, 4).expand(
@@ -3031,11 +3046,7 @@ class TrackingCommand(CommandTerm):
         # Skip reset randomizations during evaluation — they cause visible stumbling
         # at the start of rendered episodes and are only needed for training robustness.
         if not self.is_evaluating:
-            range_list = [
-                self.cfg.pose_range.get(key, (0.0, 0.0))
-                for key in ["x", "y", "z", "roll", "pitch", "yaw"]
-            ]
-            ranges = torch.tensor(range_list, device=self.device)
+            ranges = self._reset_ranges("pose_range")
             rand_samples = sample_uniform(
                 ranges[:, 0], ranges[:, 1], (len(env_ids), 6), device=self.device
             )
@@ -3044,45 +3055,14 @@ class TrackingCommand(CommandTerm):
                 rand_samples[:, 3], rand_samples[:, 4], rand_samples[:, 5]
             )
             root_ori[env_ids] = quat_mul(orientations_delta, root_ori[env_ids])
-            range_list = [
-                self.cfg.velocity_range.get(key, (0.0, 0.0))
-                for key in ["x", "y", "z", "roll", "pitch", "yaw"]
-            ]
-            ranges = torch.tensor(range_list, device=self.device)
+            ranges = self._reset_ranges("velocity_range")
             rand_samples = sample_uniform(
                 ranges[:, 0], ranges[:, 1], (len(env_ids), 6), device=self.device
             )
             root_lin_vel[env_ids] += rand_samples[:, :3]
             root_ang_vel[env_ids] += rand_samples[:, 3:]
 
-        # Handle DOF mismatch between motion library and robot
-        motion_lib_joint_pos = self.joint_pos.clone()  # Shape: [num_envs, motion_lib_num_dof]
-        motion_lib_joint_vel = self.joint_vel.clone()  # Shape: [num_envs, motion_lib_num_dof]
-
-        if self.has_dof_mismatch:
-            # Create full robot joint tensors and map using name-based indices
-            joint_pos = torch.zeros(
-                self.num_envs, self.robot_num_dof, dtype=torch.float32, device=self.device
-            )
-            joint_vel = torch.zeros(
-                self.num_envs, self.robot_num_dof, dtype=torch.float32, device=self.device
-            )
-            joint_pos[:, self.body_joint_indices] = motion_lib_joint_pos
-            joint_vel[:, self.body_joint_indices] = motion_lib_joint_vel
-            joint_pos[:, self.extra_joint_indices] = self.extra_default_positions
-            joint_vel[:, self.extra_joint_indices] = self.extra_default_velocities
-        else:
-            joint_pos = motion_lib_joint_pos
-            joint_vel = motion_lib_joint_vel
-
-        if not self.is_evaluating:
-            joint_pos += sample_uniform(
-                *self.cfg.joint_position_range, joint_pos.shape, joint_pos.device
-            )
-            joint_vel += sample_uniform(
-                *self.cfg.joint_velocity_range, joint_vel.shape, joint_vel.device
-            )
-
+        joint_pos, joint_vel = self._reset_joint_state()
         soft_joint_pos_limits = self.robot.data.soft_joint_pos_limits.torch[env_ids]
         joint_pos[env_ids] = torch.clip(
             joint_pos[env_ids], soft_joint_pos_limits[:, :, 0], soft_joint_pos_limits[:, :, 1]
@@ -3216,6 +3196,212 @@ class TrackingCommand(CommandTerm):
                 table.write_root_pose_to_sim(table_root_pose, env_ids=env_ids)
 
         self._update_relative_body_frames()
+
+    def _reset_ranges(self, name: str) -> torch.Tensor:
+        """``cfg.pose_range`` or ``cfg.velocity_range`` as a (6, 2) device tensor, built once."""
+        cache = self.__dict__.setdefault("_reset_range_tensors", {})
+        if name not in cache:
+            ranges = getattr(self.cfg, name)
+            cache[name] = torch.tensor(
+                [ranges.get(key, (0.0, 0.0)) for key in ("x", "y", "z", "roll", "pitch", "yaw")],
+                device=self.device,
+            )
+        return cache[name]
+
+    def _reset_joint_state(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Reference joint state for all envs, mapped to the robot's DOFs, with reset noise unless evaluating."""
+        motion_lib_joint_pos = self.joint_pos.clone()  # Shape: [num_envs, motion_lib_num_dof]
+        motion_lib_joint_vel = self.joint_vel.clone()  # Shape: [num_envs, motion_lib_num_dof]
+
+        if self.has_dof_mismatch:
+            # Create full robot joint tensors and map using name-based indices
+            joint_pos = torch.zeros(
+                self.num_envs, self.robot_num_dof, dtype=torch.float32, device=self.device
+            )
+            joint_vel = torch.zeros(
+                self.num_envs, self.robot_num_dof, dtype=torch.float32, device=self.device
+            )
+            joint_pos[:, self.body_joint_indices] = motion_lib_joint_pos
+            joint_vel[:, self.body_joint_indices] = motion_lib_joint_vel
+            joint_pos[:, self.extra_joint_indices] = self.extra_default_positions
+            joint_vel[:, self.extra_joint_indices] = self.extra_default_velocities
+        else:
+            joint_pos = motion_lib_joint_pos
+            joint_vel = motion_lib_joint_vel
+
+        if not self.is_evaluating:
+            joint_pos += sample_uniform(
+                *self.cfg.joint_position_range, joint_pos.shape, joint_pos.device
+            )
+            joint_vel += sample_uniform(
+                *self.cfg.joint_velocity_range, joint_vel.shape, joint_vel.device
+            )
+        return joint_pos, joint_vel
+
+    # ------------------------------------------------------------------
+    # Masked reset, for manager_env.config.sync_free_step (gear_sonic/envs/manager_env/sync_free.py)
+    # ------------------------------------------------------------------
+
+    def check_masked_reset_support(self):
+        """Raise if this configuration uses a reset feature that the masked path does not implement."""
+        unsupported = {
+            "variable frames": self.variable_frames_enabled,
+            "paired motions": self.cfg.use_paired_motions,
+            "scene objects or tables": bool(self._env.scene.rigid_objects),
+            "sample_from_n_initial_frames": self.cfg.sample_from_n_initial_frames is not None,
+            "start_from_first_frame": self.cfg.start_from_first_frame,
+            "sample_before_contact": self.cfg.sample_before_contact,
+            "first-contact frames": self._first_contact_frame is not None,
+            "height map": self.cfg.use_height_map,
+            "time-based command resampling": self.cfg.resampling_time_range[0]
+            <= self._env.max_episode_length_s,
+        }
+        used = [name for name, on in unsupported.items() if on]
+        if used:
+            raise NotImplementedError(f"sync_free_step does not support: {', '.join(used)}")
+
+    def reset_masked(self, mask: torch.Tensor) -> dict[str, torch.Tensor]:
+        """``CommandTerm.reset`` for the envs where ``mask`` is set; returns the metric means over them."""
+        count = mask.sum().clamp(min=1)
+        extras = {name: (value * mask).sum() / count for name, value in self.metrics.items()}
+        for value in self.metrics.values():
+            value.masked_fill_(mask, 0.0)
+        self.command_counter.masked_fill_(mask, 0)
+        time_left = torch.empty_like(self.time_left).uniform_(*self.cfg.resampling_time_range)
+        _masked_set(self.time_left, mask, time_left)
+        self._resample_command_masked(mask)
+        self.command_counter += mask
+        return extras
+
+    def _resample_command_masked(self, mask: torch.Tensor):
+        """``_resample_command`` for the envs where ``mask`` is set.
+
+        Every draw covers all envs and is kept only under the mask, and the robot state goes to the
+        simulator through the ``*_mask`` writes. ``_update_command`` resamples a clip whose cursor
+        reaches its end right after a reset, i.e. a start drawn on the clip's last frame; that second
+        draw happens here instead, and ``compute_masked`` leaves those cursors at 0.
+        """
+        n = self.num_envs
+        if self.is_evaluating:
+            motion_ids = torch.arange(n, device=self.device) % self.motion_lib._num_motions  # noqa: SLF001
+            starts = torch.zeros_like(self.motion_start_time_steps)
+            redraw = torch.zeros_like(mask)
+        else:
+            motion_ids, starts = self._sample_motions_and_starts(n)
+            redraw = starts + 1 >= self.motion_lib.get_time_step_total(motion_ids)
+            motion_ids_2, starts_2 = self._sample_motions_and_starts(n)
+            motion_ids = torch.where(redraw, motion_ids_2, motion_ids)
+            starts = torch.where(redraw, starts_2, starts)
+        self._redrawn_at_clip_end = mask & redraw
+        self.time_steps.masked_fill_(mask, 0)
+        _masked_set(self.motion_ids, mask, motion_ids)
+        _masked_set(self.motion_start_time_steps, mask, starts)
+        if self.encoder_sample_probs is not None:
+            _masked_set(self.encoder_index, mask, self._sample_encoder_index(self.motion_ids))
+        _masked_set(
+            self.motion_num_steps, mask, self.motion_lib.get_motion_num_steps(self.motion_ids)
+        )
+        if self.num_future_frames > 1:
+            self.future_motion_ids = self.motion_ids.repeat_interleave(self.num_future_frames)
+            self.smpl_future_motion_ids = self.motion_ids.repeat_interleave(
+                self.smpl_num_future_frames
+            )
+
+        root_pos = self.body_pos_w[:, 0].clone()
+        root_ori = self.body_quat_w[:, 0].clone()
+        root_lin_vel = self.body_lin_vel_w[:, 0].clone()
+        root_ang_vel = self.body_ang_vel_w[:, 0].clone()
+        _masked_set(self.running_ref_root_height, mask, self.anchor_pos_w[:, 2])
+        if not self.is_evaluating:
+            ranges = self._reset_ranges("pose_range")
+            rand_samples = sample_uniform(ranges[:, 0], ranges[:, 1], (n, 6), device=self.device)
+            root_pos += rand_samples[:, 0:3]
+            orientations_delta = quat_from_euler_xyz(
+                rand_samples[:, 3], rand_samples[:, 4], rand_samples[:, 5]
+            )
+            root_ori = quat_mul(orientations_delta, root_ori)
+            ranges = self._reset_ranges("velocity_range")
+            rand_samples = sample_uniform(ranges[:, 0], ranges[:, 1], (n, 6), device=self.device)
+            root_lin_vel += rand_samples[:, :3]
+            root_ang_vel += rand_samples[:, 3:]
+
+        joint_pos, joint_vel = self._reset_joint_state()
+        soft_joint_pos_limits = self.robot.data.soft_joint_pos_limits.torch
+        joint_pos = torch.clip(
+            joint_pos, soft_joint_pos_limits[:, :, 0], soft_joint_pos_limits[:, :, 1]
+        )
+        self.robot.write_joint_position_to_sim_mask(position=joint_pos, env_mask=mask)
+        self.robot.write_joint_velocity_to_sim_mask(velocity=joint_vel, env_mask=mask)
+        # Isaac Lab 3.0 writes quaternions as (x, y, z, w); SONIC keeps (w, x, y, z)
+        self.robot.write_root_pose_to_sim_mask(
+            root_pose=torch.cat([root_pos, xyzw_from_wxyz(root_ori)], dim=-1), env_mask=mask
+        )
+        self.robot.write_root_velocity_to_sim_mask(
+            root_velocity=torch.cat([root_lin_vel, root_ang_vel], dim=-1), env_mask=mask
+        )
+        self._update_relative_body_frames()
+
+    def _sample_motions_and_starts(self, n: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Motion ids and start frames for ``n`` envs, drawn as in ``_resample_command``."""
+        if self.use_adaptive_sampling:
+            motion_ids, starts = self.motion_lib.sample_motion_ids_and_time_steps(n)
+        else:
+            motion_ids = self.motion_lib.sample_motions(n)
+            starts = self.motion_lib.sample_time_steps(motion_ids, truncate_time=None)
+        return motion_ids.to(self.motion_ids.dtype), starts.to(self.motion_start_time_steps.dtype)
+
+    def _sample_encoder_index(self, motion_ids: torch.Tensor) -> torch.Tensor:
+        """One-hot encoder choice for every env, drawn as ``_resample_command`` draws it for reset envs."""
+        n = self.num_envs
+        has_smpl = self.motion_lib.motion_has_smpl[motion_ids]
+        if self.soma_encoder_index is not None and hasattr(self.motion_lib, "motion_has_soma"):
+            has_soma = self.motion_lib.motion_has_soma[motion_ids]
+            cases = [
+                (has_smpl & has_soma, self.encoder_sample_probs),
+                (has_smpl & ~has_soma, self.encoder_sample_probs_no_soma),
+                (~has_smpl & has_soma, self.encoder_sample_probs_no_smpl),
+                (~has_smpl & ~has_soma, self.encoder_sample_probs_no_smpl_no_soma),
+            ]
+        else:
+            cases = [
+                (has_smpl, self.encoder_sample_probs),
+                (~has_smpl, self.encoder_sample_probs_no_smpl),
+            ]
+        choice = torch.zeros(n, dtype=torch.long, device=self.device)
+        for case, probs in cases:
+            choice = torch.where(case, torch.multinomial(probs, n, replacement=True), choice)
+        index = torch.zeros_like(self.encoder_index).scatter_(1, choice[:, None], 1)
+        # legacy G1-SMPL / G1-SOMA latent alignment, see _resample_command
+        if self.smpl_encoder_index is not None and not self.optimize_encoders_ratio_for_CHIP:
+            use_smpl = index[:, self.smpl_encoder_index]
+            index[:, self.g1_encoder_index] |= use_smpl
+            if self.teleop_encoder_index is not None and self.teleop_sample_prob_when_smpl > 0.0:
+                sample_teleop = torch.rand(n, device=self.device) < self.teleop_sample_prob_when_smpl
+                index[:, self.teleop_encoder_index] |= use_smpl & sample_teleop.long()
+        if self.soma_encoder_index is not None and not self.optimize_encoders_ratio_for_CHIP:
+            index[:, self.g1_encoder_index] |= index[:, self.soma_encoder_index]
+        return index
+
+    def compute_masked(self, dt: float):
+        """``CommandTerm.compute`` for the sync-free step, after ``reset_masked`` in the same step.
+
+        Time-based resampling is off for tracking (see ``check_masked_reset_support``). A clip end is
+        a time_out reset and was resampled in the reset path, so ``_update_command``'s end-of-clip
+        resampling reduces to keeping the redrawn clips at cursor 0.
+        """
+        self._update_metrics()
+        self.time_left -= dt
+        if self.use_adaptive_sampling and self._adp_snapshot_valid:
+            self.motion_lib.update_adaptive_sampling(
+                self._env.reset_terminated, self._adp_prev_motion_ids, self._adp_prev_cursor
+            )
+            self._adp_snapshot_valid = False
+        self.time_steps += (~self._redrawn_at_clip_end).long()
+        self._update_relative_body_frames()
+        ema_alpha = 0.1
+        self.running_ref_root_height = (
+            ema_alpha * self.anchor_pos_w[:, 2] + (1 - ema_alpha) * self.running_ref_root_height
+        )
 
     def _update_relative_body_frames(self):
         """Reference body poses re-expressed around the robot anchor (xy and heading from the robot,
