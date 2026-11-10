@@ -278,17 +278,11 @@ class Actor(nn.Module):
         if last_step_only:
             mean = mean[:, -1]
 
-        # Get std using the property that handles both parameterizations
+        # Get std using the property that handles both parameterizations. The scale is clamped here, so
+        # no check that reads it back to the host (one sync per call); a NaN can only come from a
+        # non-finite update, which the trainer skips.
         std = self.get_std
-        # The check and Normal's argument validation read values back to the host. The scale is clamped
-        # below either way, so no-grad rollout steps (parameters fixed) skip both; updates keep them.
-        checked = torch.is_grad_enabled()
-        if checked and (torch.any(torch.isnan(std)) or torch.any(std <= 0)):
-            print(f"[WARNING] Invalid std detected! std: {std}")
-            std = torch.clamp(std, min=1e-6)
-        self.distribution = Normal(
-            mean, (mean * 0.0 + std).clamp(min=1e-6), validate_args=None if checked else False
-        )
+        self.distribution = Normal(mean, (mean * 0.0 + std).clamp(min=1e-6), validate_args=False)
 
     def act(self, obs_dict, episode_attnmask=None, **kwargs):
         """Sample actions from the current policy for a single timestep.
@@ -315,7 +309,9 @@ class Actor(nn.Module):
         # except Exception as e:
         #     import ipdb; ipdb.set_trace()
         #     raise e
-        actions = self.distribution.sample()
+        # the draw sample() makes (detached), without torch.normal's std >= 0 check, a host sync
+        with torch.no_grad():
+            actions = self.distribution.rsample()
         return TensorDict(
             {
                 "actions": actions,

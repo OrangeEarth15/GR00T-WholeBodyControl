@@ -130,17 +130,19 @@ class TRLAuxLossPPOTrainer(TRLPPOTrainer):
             policy_results
         )
 
+        # zeros() rather than torch.tensor(0.0, device=device): copying a host scalar from pageable
+        # memory waits for the stream, a host sync in every minibatch
         if not aux_losses_dict:
             # No auxiliary losses found
             return {
                 "aux_losses_dict": {},
                 "aux_loss_coef": {},
-                "total_aux_loss_unscaled": torch.tensor(0.0, device=device),
-                "total_aux_loss": torch.tensor(0.0, device=device),
+                "total_aux_loss_unscaled": torch.zeros((), device=device),
+                "total_aux_loss": torch.zeros((), device=device),
             }
 
         # Compute weighted sum of auxiliary losses
-        total_aux_loss_unscaled = torch.tensor(0.0, device=device)
+        total_aux_loss_unscaled = torch.zeros((), device=device)
         for loss_name, loss_value in aux_losses_dict.items():
             coef = aux_loss_coef.get(loss_name, 0.0)
             total_aux_loss_unscaled += coef * loss_value

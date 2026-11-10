@@ -1449,16 +1449,6 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
         else:
             loss = pg_loss + args.vf_coef * vf_loss + self.entropy_coef * entropy_loss
 
-        if torch.isnan(loss) or torch.isinf(loss):
-            print(f"Invalid loss detected: {loss}")  # noqa: T201
-            print(
-                f"Ratio stats: min={ratio.min()}, max={ratio.max()}, mean={ratio.mean()}"
-            )  # noqa: T201
-            print(
-                f"Advantage stats: min={mb_advantage.min()}, max={mb_advantage.max()}"
-            )  # noqa: T201
-            # Skip this update or use previous valid parameters
-
         loss_dict = {
             "ppo_loss": loss,
             # logging metrics
@@ -1794,7 +1784,15 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
                                         with common.Timer("optimizer_step"):
                                             optimizer.step()
                                     else:
-                                        print("NaN in gradient! Skipped!!!!")  # noqa: T201
+                                        # a non-finite loss also lands here; checking it in _compute_loss
+                                        # cost a host sync in every minibatch
+                                        ratio = loss_dict["ppo_loss_dict"]["ratio"]
+                                        adv = mb_rollout_data["mb_advantage"]
+                                        print(  # noqa: T201
+                                            f"NaN in gradient! Skipped!!!! loss {loss_dict['loss'].item()}, "
+                                            f"ratio [{ratio.min().item()}, {ratio.max().item()}], "
+                                            f"advantage [{adv.min().item()}, {adv.max().item()}]"
+                                        )
 
                                     optimizer.zero_grad()
                                     with torch.no_grad():
