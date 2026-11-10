@@ -473,7 +473,10 @@ class UniversalTokenModule(nn.Module):
             logger.info("Froze quantizer")
 
         if compile_modules:
-            # in place, so state_dict keys keep their names; indexed routing changes the batch size
+            # in place, so state_dict keys keep their names; indexed routing changes the batch size.
+            # Every encoder and decoder runs BaseModule.forward, and dynamo's recompile limit counts
+            # per code object: with the default 8, most module / grad-mode variants would run eager
+            torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, 128)
             for module in list(self.encoders.values()) + list(self.decoders.values()):
                 module.compile(dynamic=not dense_routing)
 
