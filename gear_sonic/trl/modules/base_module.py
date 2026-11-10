@@ -2,6 +2,7 @@
 
 import inspect
 
+import torch
 import torch.nn as nn
 import torchvision.models as models
 
@@ -54,6 +55,50 @@ def align_linear_layers(module):
             layer.__class__ = _AlignedLinear
             count += 1
     return count
+
+
+_FP32_CLASSES = {}
+
+
+def _fp32_class(cls):
+    """Subclass of the Linear class ``cls`` whose forward runs in FP32 with autocast off."""
+    if cls not in _FP32_CLASSES:
+
+        def forward(self, input):
+            with torch.autocast(device_type=input.device.type, enabled=False):
+                return cls.forward(self, input.float())
+
+        _FP32_CLASSES[cls] = type(f"FP32{cls.__name__}", (cls,), {"forward": forward})
+    return _FP32_CLASSES[cls]
+
+
+def autocast_bf16(model):
+    """Run the networks in ``model`` (its children that contain ``BaseModule``s: the actor's token module, the
+    critic module) under bf16 autocast, with the last Linear layer of every ``BaseModule`` (each encoder, decoder
+    and the critic) in FP32.
+
+    The hidden matmuls run in bf16; the encoder latents that the FSQ quantizer rounds, the action mean and the
+    value come out of FP32 layers, and rollout and update use the same numerics. Returns the number of FP32 heads.
+    """
+    heads = 0
+    for module in model.modules():
+        if isinstance(module, BaseModule):
+            linears = [m for m in module.modules() if isinstance(m, nn.Linear)]
+            if linears:
+                linears[-1].__class__ = _fp32_class(type(linears[-1]))
+                heads += 1
+    for child in model.children():
+        if any(isinstance(m, BaseModule) for m in child.modules()):
+            child.forward = _autocast(child.forward)
+    return heads
+
+
+def _autocast(forward):
+    def autocast_forward(*args, **kwargs):
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            return forward(*args, **kwargs)
+
+    return autocast_forward
 
 
 class ResidualBlock(nn.Module):

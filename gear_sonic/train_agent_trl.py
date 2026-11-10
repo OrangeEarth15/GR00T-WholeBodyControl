@@ -418,6 +418,11 @@ def main(config: OmegaConf):
 
         aligned = sum(align_linear_layers(m) for m in (policy, value_model) if m is not None)
         logger.info(f"align_linear: padded the matmuls of {aligned} Linear layers")
+    if config.algo.config.get("bf16_autocast", False):
+        from gear_sonic.trl.modules.base_module import autocast_bf16
+
+        heads = sum(autocast_bf16(m) for m in (policy, value_model) if m is not None)
+        logger.info(f"bf16_autocast: policy and critic under bf16 autocast, {heads} FP32 output layers")
 
     if config.algo.config.get("pretrained_model", None) is not None:
         pretrained_cfg = config.algo.config.pretrained_model
