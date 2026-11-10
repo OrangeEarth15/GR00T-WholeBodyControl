@@ -30,22 +30,45 @@ def set_fuzzy_config_params(config, candidate_keys, value):
     return config
 
 
+# the intersection masks of create_encoder_masks: "a_has_b" selects, among the rows routed to encoder a,
+# those where encoder b is active too
+_PAIRS = {
+    "g1_has_smpl": ("g1", "smpl"),
+    "teleop_has_smpl": ("teleop", "smpl"),
+    "smpl_has_teleop": ("smpl", "teleop"),
+    "g1_has_teleop": ("g1", "teleop"),
+    "teleop_has_g1": ("teleop", "g1"),
+    "g1_has_soma": ("g1", "soma"),
+}
+
+
 def _dense_pair_masks(encoder_masks):
     """The intersection masks of ``create_encoder_masks`` for latents that cover every row: rows where both
     encoders of a pair are active."""
-    pairs = {
-        "g1_has_smpl": ("g1", "smpl"),
-        "teleop_has_smpl": ("teleop", "smpl"),
-        "smpl_has_teleop": ("smpl", "teleop"),
-        "g1_has_teleop": ("g1", "teleop"),
-        "teleop_has_g1": ("teleop", "g1"),
-        "g1_has_soma": ("g1", "soma"),
-    }
     return {
         name: encoder_masks[a] & encoder_masks[b]
-        for name, (a, b) in pairs.items()
+        for name, (a, b) in _PAIRS.items()
         if encoder_masks.get(a) is not None and encoder_masks.get(b) is not None
     }
+
+
+def _mask_rows(encoder_masks):
+    """Row indices of the encoder masks and of their intersections, for the indexed routing.
+
+    Boolean indexing syncs with the host at every use, in the forward pass and again in its backward;
+    indexing with row indices does neither and selects the same rows in the same order. Building the
+    indices costs one sync per mask, here. Adds the boolean intersection masks to ``encoder_masks``, as
+    ``create_encoder_masks`` does.
+    """
+    rows = {
+        name: None if mask is None else mask.nonzero().squeeze(-1)
+        for name, mask in encoder_masks.items()
+    }
+    for name, (a, b) in _PAIRS.items():
+        if encoder_masks.get(a) is not None and encoder_masks.get(b) is not None:
+            encoder_masks[name] = encoder_masks[b][rows[a]]
+            rows[name] = encoder_masks[name].nonzero().squeeze(-1)
+    return rows
 
 
 class UniversalTokenModule(nn.Module):
@@ -607,7 +630,8 @@ class UniversalTokenModule(nn.Module):
             encoded_tokens: Dict mapping encoder name to tensor of shape
                 ``(num_masked, num_tokens, token_dim)``.
             encoder_masks: Dict mapping encoder name to a boolean index tensor
-                of length ``batch*seq``.  ``None`` means all samples.
+                of length ``batch*seq``, or to the indices of its set rows.  ``None``
+                means all samples.
             batch_size: Batch dimension ``B``.
             seq_len: Sequence dimension ``S``.
 
@@ -896,9 +920,14 @@ class UniversalTokenModule(nn.Module):
         dense_routing = not pre_quantization_residual and (
             self.dense_routing or not (compute_aux_loss or return_dict or torch.is_grad_enabled())
         )
-        encoder_masks = self.create_encoder_masks(tokenizer_obs, intersections=not dense_routing)
-        if dense_routing and compute_aux_loss:
-            encoder_masks.update(_dense_pair_masks(encoder_masks))
+        encoder_masks = self.create_encoder_masks(tokenizer_obs, intersections=False)
+        if dense_routing:
+            routing = encoder_masks
+            if compute_aux_loss:
+                encoder_masks.update(_dense_pair_masks(encoder_masks))
+        else:
+            # the indexed routing (and the aux losses) select rows by index, not by boolean mask
+            routing = _mask_rows(encoder_masks)
         encoded_tokens = {}
         encoded_latents = {}
         if pre_quantization_residual:
@@ -909,7 +938,7 @@ class UniversalTokenModule(nn.Module):
             )
 
             for encoder_name in self.encoders_to_iterate:
-                encoder_mask = encoder_masks[encoder_name]
+                encoder_mask = routing[encoder_name]
 
                 # Get raw latent (including additive encoders) without quantization
                 latent = self.encode(
@@ -949,15 +978,13 @@ class UniversalTokenModule(nn.Module):
                 encoded_tokens[encoder_name], encoded_latents[encoder_name] = self.encode(
                     encoder_name,
                     tokenizer_obs,
-                    None if dense_routing else encoder_masks[encoder_name],
+                    None if dense_routing else routing[encoder_name],
                     frame_mask=frame_mask,
                 )
         if dense_routing:
             all_tokens = self.select_all_tokens(encoded_tokens, encoder_masks, batch_size, seq_len)
         else:
-            all_tokens = self.assemble_all_tokens(
-                encoded_tokens, encoder_masks, batch_size, seq_len
-            )
+            all_tokens = self.assemble_all_tokens(encoded_tokens, routing, batch_size, seq_len)
 
         # POST-QUANTIZATION MODE: add residual after FSQ tokens (default)
         if latent_residual is not None and latent_residual_mode == "post_quantization":
@@ -1033,7 +1060,7 @@ class UniversalTokenModule(nn.Module):
             smpl_mask = None
 
             if smpl_encoder_name is not None and "g1" in encoded_latents:
-                smpl_mask = encoder_masks.get(smpl_encoder_name)
+                smpl_mask = routing.get(smpl_encoder_name)
 
                 if dense_routing and smpl_mask is not None:
                     # rows without SMPL drop out through the pair masks in the losses
@@ -1043,7 +1070,7 @@ class UniversalTokenModule(nn.Module):
                         )
                     smpl_latents = encoded_latents[smpl_encoder_name]
                     has_stiff_samples = True
-                elif smpl_mask is not None and smpl_mask.sum() > 0:
+                elif smpl_mask is not None and smpl_mask.numel() > 0:
                     smpl_latents = encoded_latents[smpl_encoder_name]
 
                     # Extract compliance values for these envs FIRST
@@ -1129,7 +1156,7 @@ class UniversalTokenModule(nn.Module):
                 "tokenizer_obs": tokenizer_obs,
                 "encoded_tokens": encoded_tokens,
                 "encoded_latents": encoded_latents,
-                "encoder_masks": encoder_masks,
+                "encoder_masks": routing,
                 "decoded_outputs": decoded_outputs,
                 "action_mean": action_mean,
                 "encoders_cfg": self.encoders_cfg,
