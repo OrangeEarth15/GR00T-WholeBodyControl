@@ -161,6 +161,14 @@ rows of a minibatch, about 1.6 times the encoder work, and the update gets slowe
 iteration), so it is off by default. Compiling the encoders and decoders with `torch.compile` did not help
 either (1.163 s against 1.165-1.171 s per iteration).
 
+Three more syncs per minibatch did not affect the result and are gone: the aux-loss sums started from
+`torch.tensor(0.0, device=...)`, a copy from pageable host memory that waits for the stream; the loss was checked
+for NaN/Inf in every minibatch, although a non-finite loss also makes the gradients non-finite (the skipped-step
+message now prints the loss); and the policy checked its std on the host and sampled through `torch.normal`, which
+reads the std back as well (`rsample()` under `no_grad` draws the same values). 202 syncs per update remain, ten
+per minibatch: the routing's row indices, the KL-adaptive learning rate and the gradient check. With bf16 the update
+takes 0.714 s instead of 0.728 s (2.30 s against 2.32 s per iteration, two runs each on one node).
+
 ### Matmul shapes and bf16 in the update
 
 About a fifth of the update's GPU time went to cuBLAS `align1` TF32 kernels, picked for four Linear layers
@@ -172,8 +180,10 @@ shapes. The update takes 1.04 s instead of 1.12 s per iteration (2.61 s against 
 `algo.config.bf16_autocast=True` runs the policy and critic forward and backward passes under bf16 autocast.
 The last Linear layer of each network (action means, values, latent heads) stays in FP32, as do the losses,
 optimizer and parameters. With `align_linear` the update takes 0.72 s instead of 1.04 s (2.28 s against
-2.61 s per iteration, two runs each on one node). It changes the numerics, so it is off by default until a
-fine-tune with it matches the FP32 one in the eval.
+2.61 s per iteration, two runs each on one node). A 500-iteration fine-tune of the released checkpoint with it
+(small-step recipe below, every switch on) evaluated like the same fine-tune without bf16: success 96.51% against
+96.61% on Newton and 97.85% against 98.22% on PhysX, local MPJPE +0.00 mm and +0.12 mm on motions both track,
+less than the 0.45 mm between two FP32 fine-tunes. It changes the numerics, so it stays off by default.
 
 ## Known differences on Newton
 
@@ -223,6 +233,12 @@ The last four rows were measured on another node of the same type (2.82 s there 
 
 On motions both stacks track, the released checkpoint's local MPJPE differs from PhysX by
 +0.05 mm with 1 substep and +0.36 mm with 2 substeps.
+
+The eval command merges `terminations=tracking/eval` into the training terminations, so the training-only
+`foot_pos_xyz` (an ankle more than 0.2 m from the reference) still ends episodes. Without it
+(`++manager_env.config.train_only_terminations=[foot_pos_xyz]`) the released checkpoint scores 98.39% instead of
+96.14% on Newton (1 substep, 2 mm gap) and 99.15% instead of 97.17% on Isaac Lab 2.3.2 + PhysX, with the same local
+MPJPE on motions both evals track.
 
 ONNX exports from both stacks are identical for the released checkpoint. `torch.onnx.export` is
 called with `dynamo=False`, because torch 2.9 and later default to the dynamo exporter, which
