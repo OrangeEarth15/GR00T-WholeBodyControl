@@ -237,7 +237,10 @@ class PostProcessingGraph:
     A replay reruns the recorded kernels on the recorded buffers without running the Python code. What keeps it
     equal to calling ``post_process``:
 
-    - Warp work (Isaac Lab's ``*_mask`` writes and lazy data, Newton's FK) is recorded on the same stream.
+    - Warp work (Isaac Lab's ``*_mask`` writes and lazy data, Newton's FK) is recorded on the same stream. Warp
+      code must launch on Warp's current stream: a ``wp.stream_from_torch`` wrapper of the capture stream that
+      is freed mid-capture resets Warp's current stream, and later Warp memsets (Newton clearing its FK masks)
+      then run once on the legacy stream instead of being recorded.
     - Tensor attributes that the step reassigns (metrics, relative body frames, ``reset_buf``, ...) are copied
       back into the buffers they held before the capture, at the end of the graph, where the next replay reads
       them.

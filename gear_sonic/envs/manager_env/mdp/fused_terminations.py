@@ -258,8 +258,6 @@ class FusedTerminationManager(TerminationManager):
                 self._terminated_wp,
             ],
             device=self.device,
-            # the current torch stream, also when sync_free records the step as a CUDA graph
-            stream=wp.stream_from_torch(torch.cuda.current_stream(self.device)),
         )
         if self._check:
             self._check_mismatches += (stock != self._term_dones).sum(dim=0)

@@ -214,11 +214,6 @@ def _cursor(command):
     ]
 
 
-def _stream(command):
-    # the current torch stream, also when sync_free records the step as a CUDA graph
-    return wp.stream_from_torch(torch.cuda.current_stream(command.device))
-
-
 def _update_relative_body_frames(self):
     fused = self._fused  # noqa: SLF001
     if fused.check:
@@ -240,7 +235,6 @@ def _update_relative_body_frames(self):
         ],
         outputs=[wp.from_torch(self.body_pos_relative_w), wp.from_torch(self.body_quat_relative_w)],
         device=self.device,
-        stream=_stream(self),
     )
     if fused.check:
         n = len(METRICS)
@@ -287,7 +281,6 @@ def _update_metrics(self):
         ],
         outputs=[wp.from_torch(fused.metrics)],
         device=self.device,
-        stream=_stream(self),
     )
     if fused.check:
         n = len(METRICS)

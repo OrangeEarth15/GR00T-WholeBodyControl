@@ -503,8 +503,6 @@ class _WarpTerm:
             inputs=inputs,
             outputs=[wp.from_torch(self.out)],
             device=command.device,
-            # the current torch stream, also when sync_free records the step as a CUDA graph
-            stream=wp.stream_from_torch(torch.cuda.current_stream(command.device)),
         )
         if self.check:
             stock = self.stock(env, **params)
