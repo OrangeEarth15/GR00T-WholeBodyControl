@@ -4,8 +4,10 @@
 physics of the step, so the reset, command and observation work after it (about 40 ms of kernel launches per
 control step) only starts once the GPU is idle. Here every reset-path update covers all environments under the
 reset mask, with Isaac Lab 3.0's ``*_mask`` writes, so ``env.step`` has no host sync left and the CPU queues the
-post-processing while the GPU runs the physics. Use it with ``newton.graph_decimation=True``: without it,
-``sim.step`` blocks the CPU on every physics step anyway.
+post-processing while the GPU runs the physics. Export ``CUDA_SCALE_LAUNCH_QUEUES=4x`` before CUDA starts: the
+default launch queues fill up with the step's ~1300 small kernels and stall the CPU while the physics runs.
+``newton.graph_decimation=True`` adds about 0.5% on top (one H100 PCIe, 1 substep, 2 mm gap, 4096 envs: training
+iterations 3.37 s -> 2.84 s with all three).
 
 ``enable`` checks that the task only uses what is implemented here, which is what sonic_release uses: no
 curriculum, recorder or reset-mode event terms, no stateful observation, reward or termination terms,
@@ -15,12 +17,14 @@ termination.
 
 from __future__ import annotations
 
+import os
 import types
 
 from isaaclab.envs.mdp import push_by_setting_velocity
 from isaaclab.envs.mdp.actions.joint_actions import JointAction
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import math as math_utils
+from loguru import logger
 import torch
 
 from gear_sonic.envs.manager_env.mdp.commands import TrackingCommand
@@ -70,6 +74,11 @@ def enable(env):
         raise NotImplementedError(f"sync_free_step does not support: {'; '.join(unsupported)}")
     for term in commands:
         term.check_masked_reset_support()
+    if not os.environ.get("CUDA_SCALE_LAUNCH_QUEUES"):
+        logger.warning(
+            "sync_free_step: CUDA_SCALE_LAUNCH_QUEUES is not set; the default launch queues fill up "
+            "while the physics runs and stall the CPU. Export CUDA_SCALE_LAUNCH_QUEUES=4x before starting."
+        )
     env.step = types.MethodType(step, env)
 
 
