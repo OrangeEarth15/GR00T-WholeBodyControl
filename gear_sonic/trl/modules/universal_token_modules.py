@@ -503,8 +503,11 @@ class UniversalTokenModule(nn.Module):
         )
         return tokenizer_obs_dict
 
-    def create_encoder_masks(self, tokenizer_obs):
+    def create_encoder_masks(self, tokenizer_obs, intersections=True):
         """Create encoder masks for each encoder.
+
+        ``intersections=False`` skips the pairwise masks below (only the aux losses read them); building
+        them indexes with booleans, a host sync each.
 
         When optimize_encoders_ratio_for_CHIP=False (legacy):
             - encoder_index is multi-hot: SMPL-native envs have both SMPL=1 and G1=1
@@ -525,6 +528,8 @@ class UniversalTokenModule(nn.Module):
 
         for i, encoder_name in enumerate(self.encoder_sample_probs.keys()):
             encoder_masks[encoder_name] = encoder_index[..., i].bool().flatten()
+        if not intersections:
+            return encoder_masks
 
         # Re-organized creation of intersection encoder masks.
         # NOTE: No need to use compliance encoders in this version -- directly use the normal encoders
@@ -582,6 +587,20 @@ class UniversalTokenModule(nn.Module):
             all_tokens[encoder_masks[encoder_name]] = encoded_tokens[encoder_name]
         all_tokens = all_tokens.view(batch_size, seq_len, *all_tokens.shape[1:])
         return all_tokens
+
+    def select_all_tokens(self, encoded_tokens, encoder_masks, batch_size, seq_len):
+        """``assemble_all_tokens`` for encoders that ran on the whole batch.
+
+        Rows are picked with ``torch.where`` in the same encoder order, so a later encoder wins
+        where masks overlap, as with the scatter; rows no encoder selects stay zero.
+        """
+        all_tokens = encoded_tokens[next(iter(encoded_tokens))]
+        if len(encoded_tokens) > 1:
+            all_tokens = torch.zeros_like(all_tokens)
+            for encoder_name, tokens in encoded_tokens.items():
+                mask = encoder_masks[encoder_name].view(-1, *([1] * (tokens.dim() - 1)))
+                all_tokens = torch.where(mask, tokens, all_tokens)
+        return all_tokens.view(batch_size, seq_len, *all_tokens.shape[1:])
 
     def _encode_single(self, encoder_name, tokenizer_obs, encoder_mask=None, frame_mask=None):
         """Encode using a single encoder without quantization or additive composition.
@@ -826,13 +845,19 @@ class UniversalTokenModule(nn.Module):
         frame_mask, token_mask = self._create_frame_and_token_masks(tokenizer_obs)
 
         # encode motion using all available encoders
-        encoder_masks = self.create_encoder_masks(tokenizer_obs)
-        encoded_tokens = {}
-        encoded_latents = {}
-        if latent_residual is not None and latent_residual_mode in [
+        pre_quantization_residual = latent_residual is not None and latent_residual_mode in [
             "pre_quantization",
             "pre_quantization_replace",
-        ]:
+        ]
+        # Inference that only needs the action (rollout) runs every encoder on the whole batch and
+        # picks rows with torch.where: the same tokens without the host syncs of boolean indexing.
+        dense_routing = not (
+            compute_aux_loss or return_dict or pre_quantization_residual or torch.is_grad_enabled()
+        )
+        encoder_masks = self.create_encoder_masks(tokenizer_obs, intersections=not dense_routing)
+        encoded_tokens = {}
+        encoded_latents = {}
+        if pre_quantization_residual:
             # PRE-QUANTIZATION MODES: add or replace residual before FSQ
             # Reshape residual to (batch*seq, num_tokens, token_dim) for masking
             residual_flat = latent_residual.view(
@@ -880,10 +905,15 @@ class UniversalTokenModule(nn.Module):
                 encoded_tokens[encoder_name], encoded_latents[encoder_name] = self.encode(
                     encoder_name,
                     tokenizer_obs,
-                    encoder_masks[encoder_name],
+                    None if dense_routing else encoder_masks[encoder_name],
                     frame_mask=frame_mask,
                 )
-        all_tokens = self.assemble_all_tokens(encoded_tokens, encoder_masks, batch_size, seq_len)
+        if dense_routing:
+            all_tokens = self.select_all_tokens(encoded_tokens, encoder_masks, batch_size, seq_len)
+        else:
+            all_tokens = self.assemble_all_tokens(
+                encoded_tokens, encoder_masks, batch_size, seq_len
+            )
 
         # POST-QUANTIZATION MODE: add residual after FSQ tokens (default)
         if latent_residual is not None and latent_residual_mode == "post_quantization":

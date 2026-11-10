@@ -280,11 +280,15 @@ class Actor(nn.Module):
 
         # Get std using the property that handles both parameterizations
         std = self.get_std
-        # Safety check for NaN or negative values
-        if torch.any(torch.isnan(std)) or torch.any(std <= 0):
+        # The check and Normal's argument validation read values back to the host. The scale is clamped
+        # below either way, so no-grad rollout steps (parameters fixed) skip both; updates keep them.
+        checked = torch.is_grad_enabled()
+        if checked and (torch.any(torch.isnan(std)) or torch.any(std <= 0)):
             print(f"[WARNING] Invalid std detected! std: {std}")
             std = torch.clamp(std, min=1e-6)
-        self.distribution = Normal(mean, (mean * 0.0 + std).clamp(min=1e-6))
+        self.distribution = Normal(
+            mean, (mean * 0.0 + std).clamp(min=1e-6), validate_args=None if checked else False
+        )
 
     def act(self, obs_dict, episode_attnmask=None, **kwargs):
         """Sample actions from the current policy for a single timestep.
@@ -429,7 +433,9 @@ class Actor(nn.Module):
         self.steps += 1
         return TensorDict(
             {
-                "actions": self.distribution.sample(),
+                # rsample draws from the same Normal; sample() goes through torch.normal, whose
+                # check that std >= 0 reads back to the host on every step
+                "actions": self.distribution.rsample(),
                 "action_mean": self.action_mean,
                 "action_sigma": self.action_std,
                 "obs_dict": self.obs_dict_buffer if self.output_original_obs_dict else None,
