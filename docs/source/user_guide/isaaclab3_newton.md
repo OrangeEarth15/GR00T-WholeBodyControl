@@ -185,6 +185,12 @@ optimizer and parameters. With `align_linear` the update takes 0.72 s instead of
 96.61% on Newton and 97.85% against 98.22% on PhysX, local MPJPE +0.00 mm and +0.12 mm on motions both track,
 less than the 0.45 mm between two FP32 fine-tunes. It changes the numerics, so it stays off by default.
 
+With bf16 the update is bound by kernel launches: in nsys it takes 908 ms, of which the GPU is busy 508 ms (56%),
+against 1181 ms and 80% in FP32. Dense routing then costs nothing (0.712 s against 0.713 s per update, two runs
+each), so the update could be captured as one CUDA graph per minibatch, which needs static shapes. That would also
+need a fused Adam that skips non-finite steps on the device, the KL-adaptive learning rate as a device tensor,
+autocast without its weight cache, and DDP support for multi-GPU runs; it is not done.
+
 ## Known differences on Newton
 
 - Friction is combined with max() instead of the multiply mode used with PhysX.
