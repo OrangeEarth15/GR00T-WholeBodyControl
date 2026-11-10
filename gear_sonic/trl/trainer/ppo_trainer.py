@@ -2058,10 +2058,11 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
         args = self.args
         model = self.model
 
-        # Check for NaN/Inf in gradients: one host sync for all parameters, the per-parameter
-        # loop (one sync each) only runs to name the offender
+        # Check for NaN/Inf in gradients: one host sync on the total norm, which a NaN/Inf in any
+        # gradient makes non-finite (a few foreach kernels instead of two per parameter); the
+        # per-parameter loop (one sync each) only runs to name the offender
         grads = [param.grad for param in model.parameters() if param.grad is not None]
-        if grads and not torch.stack([torch.isfinite(grad).all() for grad in grads]).all():
+        if grads and not torch.isfinite(torch.nn.utils.get_total_norm(grads)):
             for name, param in model.named_parameters():
                 if param.grad is not None and not torch.isfinite(param.grad).all():
                     print(  # noqa: T201
