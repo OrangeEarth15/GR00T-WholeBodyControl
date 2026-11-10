@@ -51,7 +51,31 @@ Append these overrides to the usual training, eval or export commands:
 | `manager_env.config.newton.use_cuda_graph` | True | the physics step is a CUDA graph |
 | `manager_env.config.newton.gap` | 0.01 | contact detection distance [m]; most of the trimesh collision cost scales with it. 0.002 made training iterations 1.15x faster (1 substep) and left the released checkpoint's eval unchanged (96.1% vs 96.4%, within error) |
 | `manager_env.config.newton.graph_decimation` | False | capture all physics steps of a control step in one CUDA graph. Isaac Lab 3.0 does this by itself only for robots with non-implicit actuators. Same throughput and eval on its own (the GPU had no gaps between the per-step graphs), but `sim.step` no longer blocks the CPU, which overlapping post-processing with physics needs. Changes the update rate of sensor histories (contact forces) and of finite-difference joint accelerations from per physics step to per control step |
+| `manager_env.config.sync_free_step` | False | reset terminated envs through masks instead of `reset_buf.nonzero()`, so `env.step` has no host sync; see below |
 | `manager_env.config.fused_rewards` | False | evaluate the tracking reward set in one Warp kernel; `fused_rewards_check=True` compares it with the stock terms |
+
+## Overlapping post-processing with physics
+
+Isaac Lab finds the envs to reset with `reset_buf.nonzero()`, which waits for the step's physics. The reset,
+command and observation work after it (about 1300 small kernels per control step) then runs while the GPU is
+idle. `sync_free_step` applies every reset-path update to all envs under the reset mask, through Isaac Lab 3.0's
+`*_mask` writes, so the CPU queues that work while the GPU still runs the physics:
+
+```sh
+export CUDA_SCALE_LAUNCH_QUEUES=4x   # before CUDA starts: the default launch queues fill up mid-step
+... ++manager_env.config.sync_free_step=True ++manager_env.config.newton.graph_decimation=True
+```
+
+On one H100 PCIe (1 substep, 2 mm gap, 4096 envs) a training iteration goes from 3.37 s to 2.84 s and a control
+step from 101 ms to 65 ms, of which the GPU idles 2 ms; the step is now bound by the physics on the GPU.
+`graph_decimation` adds about 0.5% on top of the other two. Rollout inference has no host syncs either: every
+encoder runs on the whole batch and rows are picked with `torch.where` (always on, bitwise-identical actions).
+
+In eval mode the masked reset is exact against the default path on 130 state tensors
+(`sonic_il3/p3/test_sync_free.py` in the migration workspace), and the released checkpoint's eval is unchanged
+(96.2% vs 96.1-96.2%). `enable` refuses tasks that use what it does not implement: curriculum, recorder or
+reset-mode event terms, stateful observation terms, interval events other than `push_by_setting_velocity`,
+scene objects, or tracking without a time_out termination.
 
 ## Known differences on Newton
 
