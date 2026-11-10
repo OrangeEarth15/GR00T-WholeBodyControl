@@ -3263,9 +3263,15 @@ class TrackingCommand(CommandTerm):
     def reset_masked(self, mask: torch.Tensor) -> dict[str, torch.Tensor]:
         """``CommandTerm.reset`` for the envs where ``mask`` is set; returns the metric means over them."""
         count = mask.sum().clamp(min=1)
-        extras = {name: (value * mask).sum() / count for name, value in self.metrics.items()}
-        for value in self.metrics.values():
-            value.masked_fill_(mask, 0.0)
+        fused = self.__dict__.get("_fused")  # fused_command: the metrics are columns of one buffer
+        if fused is not None and set(self.metrics) == set(fused.columns):
+            means = (fused.metrics * mask[:, None]).sum(dim=0) / count
+            extras = {name: means[fused.columns[name]] for name in self.metrics}
+            fused.metrics.masked_fill_(mask[:, None], 0.0)
+        else:
+            extras = {name: (value * mask).sum() / count for name, value in self.metrics.items()}
+            for value in self.metrics.values():
+                value.masked_fill_(mask, 0.0)
         self.command_counter.masked_fill_(mask, 0)
         time_left = torch.empty_like(self.time_left).uniform_(*self.cfg.resampling_time_range)
         _masked_set(self.time_left, mask, time_left)

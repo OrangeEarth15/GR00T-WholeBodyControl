@@ -359,7 +359,6 @@ class FusedRewardManager(RewardManager):
         self._raw = torch.zeros((self.num_envs, len(self._term_names)), device=dev)
         self._raw_wp = wp.from_torch(self._raw)
         self._empty3 = wp.zeros((self.num_envs, 1, 1), dtype=float, device=dev)
-        self._stream = wp.stream_from_torch(torch.cuda.current_stream(dev))
         return None
 
     def compute(self, dt: float) -> torch.Tensor:
@@ -423,7 +422,8 @@ class FusedRewardManager(RewardManager):
             ],
             outputs=[self._raw_wp],
             device=self.device,
-            stream=self._stream,
+            # the current torch stream, also when sync_free records the step as a CUDA graph
+            stream=wp.stream_from_torch(torch.cuda.current_stream(self.device)),
         )
         if self._check:
             self._compare_with_stock()

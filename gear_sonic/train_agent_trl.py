@@ -164,6 +164,25 @@ def create_manager_env(config, device, headless, env_instance_cfg):
         env.reward_manager = FusedRewardManager(
             env.cfg.rewards, env, check=env_instance_cfg.config.get("fused_rewards_check", False)
         )
+    if env_instance_cfg.config.get("fused_obs", False):
+        from gear_sonic.envs.manager_env.mdp import fused_obs
+
+        fused_obs.enable(env, check=env_instance_cfg.config.get("fused_obs_check", False))
+    if env_instance_cfg.config.get("fused_command", False):
+        from gear_sonic.envs.manager_env.mdp import fused_command
+
+        fused_command.enable(
+            env.command_manager.get_term("motion"),
+            check=env_instance_cfg.config.get("fused_command_check", False),
+        )
+    if env_instance_cfg.config.get("fused_terminations", False):
+        from gear_sonic.envs.manager_env.mdp.fused_terminations import FusedTerminationManager
+
+        env.termination_manager = FusedTerminationManager(
+            env.cfg.terminations,
+            env,
+            check=env_instance_cfg.config.get("fused_terminations_check", False),
+        )
 
     env = ManagerEnvWrapper(env, env_instance_cfg.config)
     return env
