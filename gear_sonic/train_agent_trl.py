@@ -223,6 +223,10 @@ def main(config: OmegaConf):
     import torch  # noqa: E402
 
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
+    if config.algo.config.get("update_graph", False) and int(os.environ.get("WORLD_SIZE", "1")) > 1:
+        # the update graph records NCCL collectives; the async error handler would query their events mid-capture
+        # (torchrun sets it to 1, so it is overridden, not defaulted)
+        os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = "0"
     kwargs = InitProcessGroupKwargs(timeout=timedelta(seconds=6000))
     accelerator = Accelerator(
         gradient_accumulation_steps=training_args.gradient_accumulation_steps,

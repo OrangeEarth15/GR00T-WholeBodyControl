@@ -646,9 +646,18 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
         # see https://gist.github.com/vwxyzjn/2581bff1e48e185e0b85b6dfe1def79c
         torch.manual_seed(args.seed)
 
-        self.model, self.optimizer, self.dataloader = accelerator.prepare(
-            self.model, self.optimizer, self.dataloader
-        )
+        # Building DDP fixes the stream of every parameter's gradient accumulator. With algo.config.update_graph on
+        # several GPUs the backward is captured, and accumulators on the legacy stream would have it wait on the capture.
+        side = None
+        if self.config.get("update_graph", False) and accelerator.num_processes > 1:
+            side = torch.cuda.Stream()
+            side.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(side):  # a no-op for None
+            self.model, self.optimizer, self.dataloader = accelerator.prepare(
+                self.model, self.optimizer, self.dataloader
+            )
+        if side is not None:
+            torch.cuda.current_stream().wait_stream(side)
         self.unwrapped_model = unwrap_model(self.model)  # noqa: F405
         torch.manual_seed(self.local_seed)  # reset the local seed again
 

@@ -9,11 +9,21 @@ the launch cost. The step must then make no host decision, so two of them move t
 - the NaN/Inf gradient check: instead of skipping ``optimizer.step()``, set ``found_inf``, which torch's fused
   AdamW reads to skip the step on the device; skipped steps are counted and printed once per update.
 
-Requirements, checked at setup: one process, one micro-batch per minibatch, dense encoder routing (static shapes),
-no symmetry or image-augmentation losses, and torch's fused AdamW (transformers' default optimizer with torch >= 2.8).
-The first minibatches run eagerly on a side stream (warm-up); then one is captured, and every later one copies its
-rows into the captured input buffers and replays.
+Requirements, checked at setup: one micro-batch per minibatch, dense encoder routing (static shapes), no symmetry or
+image-augmentation losses, and torch's fused AdamW (transformers' default optimizer with torch >= 2.8). The first
+minibatches run eagerly on a side stream (warm-up); then one is captured, and every later one copies its rows into
+the captured input buffers and replays.
+
+On several GPUs the graph also records the step's NCCL collectives: DDP's buffer broadcast in the forward and its
+gradient all-reduce in the backward, and the gather of the KL for the learning rate. As PyTorch's notes on CUDA
+graphs with DDP require, NCCL's async error handling is off (train_agent_trl.py sets
+TORCH_NCCL_ASYNC_ERROR_HANDLING=0 before the process group starts), at least 11 DDP iterations run eagerly before
+the capture, and DDP is built on a side stream (ppo_trainer.py wraps accelerator.prepare): building it fixes the
+stream of every parameter's gradient accumulator, and on the legacy stream the captured backward would have to wait
+on the capture.
 """
+import os
+
 import torch
 
 from gear_sonic.trl.utils import rl
@@ -36,8 +46,10 @@ ROLLOUT_KEYS = {
 class UpdateGraph:
     def __init__(self, trainer, warmup=3):
         args = trainer.args
-        if trainer.accelerator.num_processes != 1:
-            raise ValueError("update_graph needs one process (DDP's gradient all-reduce is not captured)")
+        if trainer.accelerator.num_processes > 1:
+            if os.environ.get("TORCH_NCCL_ASYNC_ERROR_HANDLING") != "0":
+                raise ValueError("update_graph on several GPUs needs TORCH_NCCL_ASYNC_ERROR_HANDLING=0")
+            warmup = max(warmup, 11)  # DDP times its first iterations with events, which a capture cannot record
         if args.per_device_train_batch_size != args.local_mini_batch_size:
             raise ValueError("update_graph needs one micro-batch per minibatch")
         if trainer.use_symmetry or trainer.compute_imgaug_bc_loss:
