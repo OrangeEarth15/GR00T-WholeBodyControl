@@ -154,6 +154,13 @@ def create_manager_env(config, device, headless, env_instance_cfg):
         physics.set_decimation(env.cfg.decimation)
         env._physics_handles_decimation = physics.handles_decimation()
         print(f"[newton] graph_decimation: handles_decimation={env._physics_handles_decimation}")
+    delay = env_instance_cfg.config.get("action_delay", None)
+    if delay is not None:
+        from gear_sonic.envs.manager_env import action_delay
+
+        low, high = (int(d) for d in delay)
+        action_delay.enable(env, low, high)
+        print(f"[action_delay] {low} to {high} physics steps")
     if env_instance_cfg.config.get("sync_free_step", False):
         from gear_sonic.envs.manager_env import sync_free
 
