@@ -554,9 +554,9 @@ class Actor(nn.Module):
         self.dones_buffer = None
         self.steps = 0
         del self.distribution
-        if self.has_aux_loss:
-            del self.aux_losses
-            del self.aux_loss_coef
+        # reset, not deleted: with algo.config.update_graph the training forward that sets them only runs at capture
+        self.aux_losses = None
+        self.aux_loss_coef = None
 
     def eval_mode(self):
         self.is_eval_mode = True

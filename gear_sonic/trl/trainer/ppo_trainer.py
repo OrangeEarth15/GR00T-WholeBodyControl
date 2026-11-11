@@ -1659,6 +1659,11 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
         start_time = time.time()
         self._register_stats_buffer()
         model.train()
+        update_graph = None
+        if self.config.get("update_graph", False):
+            from gear_sonic.trl.trainer.update_graph import UpdateGraph
+
+            update_graph = UpdateGraph(self)
 
         # trainer state initialization
         self.state.max_steps = args.num_total_batches
@@ -1737,6 +1742,14 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
                         mini_batch_end = mini_batch_start + args.local_mini_batch_size
                         mini_batch_inds = b_inds[mini_batch_start:mini_batch_end]
                         microbatch_idx = 0
+                        if update_graph is not None:  # one micro-batch, see update_graph.py
+                            loss_dict = update_graph.minibatch(rollout_data, mini_batch_inds)
+                            with torch.no_grad():
+                                self._update_stats_buffer(
+                                    ppo_epoch_idx, minibatch_idx, 0, loss_dict, None, update_graph.inputs
+                                )
+                            minibatch_idx += 1
+                            continue
                         for micro_batch_start in range(
                             0, args.local_mini_batch_size, args.per_device_train_batch_size
                         ):
@@ -1819,6 +1832,8 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
                     #     # print(f"Empty cache at ppo_epoch_idx {ppo_epoch_idx}")
                     #     gc.collect()
                     #     torch.cuda.empty_cache()
+                if update_graph is not None:
+                    update_graph.end_update()
             ######################################################### Sync Running Mean Std #########################################################  # noqa: E501
             with common.Timer("sync_running_mean_std"):
                 self.sync_running_mean_std()

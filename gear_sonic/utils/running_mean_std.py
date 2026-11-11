@@ -133,15 +133,15 @@ class RunningMeanStd(nn.Module):
             new_mean, new_var, new_count = self._update_mean_var_count_from_moments(
                 self.running_mean, self.running_var, self.count, mean, var, input.size()[0]
             )
+            # in place, so that a CUDA graph of the update (algo.config.update_graph) keeps accumulating them
             if self.frozen_partial:
                 # Only update the last bit (futures)
-                self.running_mean[-self.diff :], self.running_var[-self.diff :], self.count = (
-                    new_mean[-self.diff :],
-                    new_var[-self.diff :],
-                    new_count,
-                )
+                self.running_mean[-self.diff :] = new_mean[-self.diff :]
+                self.running_var[-self.diff :] = new_var[-self.diff :]
             else:
-                self.running_mean, self.running_var, self.count = new_mean, new_var, new_count
+                self.running_mean.copy_(new_mean)
+                self.running_var.copy_(new_var)
+            self.count.copy_(new_count)
 
         if len(input_shape) == 3:
             y = y.view(input_shape)

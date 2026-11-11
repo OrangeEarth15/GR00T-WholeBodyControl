@@ -94,8 +94,10 @@ def autocast_bf16(model):
 
 
 def _autocast(forward):
+    # no weight-cast cache, as CUDA graph capture (algo.config.update_graph) requires; each weight is cast once per
+    # forward anyway
     def autocast_forward(*args, **kwargs):
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, cache_enabled=False):
             return forward(*args, **kwargs)
 
     return autocast_forward
