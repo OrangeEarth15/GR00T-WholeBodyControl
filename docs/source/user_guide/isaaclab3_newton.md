@@ -294,7 +294,7 @@ delay in training, evaluated on Newton (success rate):
 
 (released checkpoint: 96.1%, 95.2%, 91.0%, 0.7%; global position relative to it). A random delay in training buys
 margin for long delays at the cost of no-delay tracking, mostly the global position; a heavier root term (weight 3.0)
-halves that drift but also the gain in local MPJPE, and 1000 iterations make it larger. At 10 ms all of them track
+halves that drift but cuts the gain in local MPJPE by a third, and 1000 iterations make the drift larger. At 10 ms all of them track
 about equally, so measure the robot's latency from observation to motor command before choosing.
 
 ## Measured on one H100 PCIe, 4096 envs (2026-11-09)
