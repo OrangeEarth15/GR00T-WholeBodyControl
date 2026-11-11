@@ -66,6 +66,7 @@ Append these overrides to the usual training, eval or export commands:
 | `algo.config.actor.backbone.dense_routing` | False | run every encoder on the whole minibatch in the PPO update and evaluate the latent alignment losses under row masks: static shapes, no host syncs |
 | `algo.config.align_linear` | False | zero-pad the matmuls of Linear layers whose sizes are not multiples of 4, so cuBLAS uses its aligned TF32 kernels; parameters keep their shapes; see below |
 | `algo.config.bf16_autocast` | False | policy and critic under bf16 autocast, output layers in FP32; see below |
+| `algo.config.update_graph` | False | capture each PPO minibatch step as one CUDA graph and replay it; one GPU, needs `dense_routing` and torch's fused AdamW; see below |
 
 ## Overlapping post-processing with physics
 
@@ -185,11 +186,34 @@ optimizer and parameters. With `align_linear` the update takes 0.72 s instead of
 96.61% on Newton and 97.85% against 98.22% on PhysX, local MPJPE +0.00 mm and +0.12 mm on motions both track,
 less than the 0.45 mm between two FP32 fine-tunes. It changes the numerics, so it stays off by default.
 
+### The update as one CUDA graph
+
 With bf16 the update is bound by kernel launches: in nsys it takes 908 ms, of which the GPU is busy 508 ms (56%),
 against 1181 ms and 80% in FP32. Dense routing then costs nothing (0.712 s against 0.713 s per update, two runs
-each), so the update could be captured as one CUDA graph per minibatch, which needs static shapes. That would also
-need a fused Adam that skips non-finite steps on the device, the KL-adaptive learning rate as a device tensor,
-autocast without its weight cache, and DDP support for multi-GPU runs; it is not done.
+each), and it makes the update's shapes static. `algo.config.update_graph=True` captures one minibatch step
+(forward, losses, backward, gradient check, clipping, optimizer step) as a CUDA graph after three eager warm-up
+minibatches, and replays it for every later minibatch:
+
+```sh
+... ++algo.config.align_linear=True ++algo.config.bf16_autocast=True \
+    ++algo.config.actor.backbone.dense_routing=True ++algo.config.update_graph=True
+```
+
+The step's two host decisions run on the device instead. The KL-adaptive learning rate updates a tensor that the
+optimizer reads, copied back to `args.learning_rate` once per update. A non-finite gradient norm sets the
+`found_inf` flag of torch's fused AdamW, which then skips the step on the device; skipped steps are printed once
+per update. It needs one process (DDP's gradient all-reduce is not captured), one micro-batch per minibatch, dense
+routing, no symmetry or image-augmentation losses, and the fused AdamW (`adamw_torch_fused`, transformers' default
+with torch >= 2.8), and refuses to start otherwise. On a real rollout (20 minibatches) the parameters after the
+update are bitwise equal to those of the eager path (`sonic_il3/p3/test_update_graph.py`). On one H100 PCIe (4096
+envs, every switch, `align_linear`, bf16) the update takes 0.632 s instead of 0.714 s per iteration (2.23 s against
+2.31 s per iteration, two runs each on one node). In nsys the GPU is now busy 96% of the update (597 of 624 ms),
+and two host syncs per update remain (the learning rate and the skipped-step count, read once at its end). The
+GPU time grew by about 90 ms over the eager update with row-index routing: that is the encoder work dense routing
+adds, which the eager update had hidden in its launch gaps. A 500-iteration fine-tune of the released checkpoint
+with it (the bf16 recipe above plus dense routing) evaluated like the one without: success 96.90% against 96.51% on
+Newton and 97.90% against 97.85% on PhysX, local MPJPE +0.22 mm and +0.31 mm on motions both track, within the
+0.45 mm between two FP32 fine-tunes; no step was skipped.
 
 ## Known differences on Newton
 
@@ -240,8 +264,10 @@ Throughput on four H100 PCIe is 91% of linear (2.64 s per iteration on one GPU, 
 | + row-index routing and the total-norm gradient check in the update (always on) | 2.69 | — |
 | + `align_linear` | 2.61 | — |
 | + `bf16_autocast` | 2.28 | — |
+| + `dense_routing` and `update_graph` | 2.23 | — |
 
-The last four rows were measured on another node of the same type (2.82 s there for the row above them).
+The four rows from the routing to bf16 were measured on another node of the same type (2.82 s there for the row
+above them), the last one on a third node (2.31 s there without `update_graph`).
 
 On motions both stacks track, the released checkpoint's local MPJPE differs from PhysX by
 +0.05 mm with 1 substep and +0.36 mm with 2 substeps.
