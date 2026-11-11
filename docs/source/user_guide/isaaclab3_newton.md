@@ -66,7 +66,8 @@ Append these overrides to the usual training, eval or export commands:
 | `algo.config.actor.backbone.dense_routing` | False | run every encoder on the whole minibatch in the PPO update and evaluate the latent alignment losses under row masks: static shapes, no host syncs |
 | `algo.config.align_linear` | False | zero-pad the matmuls of Linear layers whose sizes are not multiples of 4, so cuBLAS uses its aligned TF32 kernels; parameters keep their shapes; see below |
 | `algo.config.bf16_autocast` | False | policy and critic under bf16 autocast, output layers in FP32; see below |
-| `algo.config.update_graph` | False | capture each PPO minibatch step as one CUDA graph and replay it; one GPU, needs `dense_routing` and torch's fused AdamW; see below |
+| `manager_env.config.action_delay` | None | `[min, max]` in physics steps (5 ms): the joints apply the action the policy chose `d` physics steps earlier, `d` drawn per env at every episode start; the policy still observes its latest action. `[4, 4]` is a fixed one-control-step delay, e.g. for an eval; with `graph_decimation` only whole control steps; see below |
+| `algo.config.update_graph` | False | capture each PPO minibatch step as one CUDA graph and replay it, on several GPUs with DDP's collectives in the graph; needs `dense_routing` and torch's fused AdamW; see below |
 
 ## Overlapping post-processing with physics
 
@@ -202,9 +203,15 @@ minibatches, and replays it for every later minibatch:
 The step's two host decisions run on the device instead. The KL-adaptive learning rate updates a tensor that the
 optimizer reads, copied back to `args.learning_rate` once per update. A non-finite gradient norm sets the
 `found_inf` flag of torch's fused AdamW, which then skips the step on the device; skipped steps are printed once
-per update. It needs one process (DDP's gradient all-reduce is not captured), one micro-batch per minibatch, dense
-routing, no symmetry or image-augmentation losses, and the fused AdamW (`adamw_torch_fused`, transformers' default
-with torch >= 2.8), and refuses to start otherwise. On a real rollout (20 minibatches) the parameters after the
+per update. It needs one micro-batch per minibatch, dense routing, no symmetry or image-augmentation losses, and the
+fused AdamW (`adamw_torch_fused`, transformers' default with torch >= 2.8), and refuses to start otherwise. On
+several GPUs the graph also records DDP's buffer broadcast and gradient all-reduce and the gather of the KL, as
+PyTorch's notes on CUDA graphs with DDP describe: NCCL's async error handling is turned off
+(`TORCH_NCCL_ASYNC_ERROR_HANDLING=0`, set by `train_agent_trl.py`; torchrun sets it to 1), at least 11 DDP
+iterations run eagerly before the capture, and `accelerator.prepare` runs on a side stream, because building DDP fixes
+the stream of every parameter's gradient accumulator and the captured backward cannot depend on the legacy stream.
+On two GPUs the parameters after an update are bitwise equal on both ranks to those of the eager DDP path; on four
+H100 PCIe the update takes 0.738 s instead of 0.845 s per iteration (2.29 s against 2.40 s, two runs each). On a real rollout (20 minibatches) the parameters after the
 update are bitwise equal to those of the eager path (`sonic_il3/p3/test_update_graph.py`). On one H100 PCIe (4096
 envs, every switch, `align_linear`, bf16) the update takes 0.632 s instead of 0.714 s per iteration (2.23 s against
 2.31 s per iteration, two runs each on one node). In nsys the GPU is now busy 96% of the update (597 of 624 ms),
@@ -266,15 +273,29 @@ On four GPUs (`accelerate launch --multi_gpu --num_processes 4`, 4096 envs each)
 (+36 to 38 mm) drift about as much as with the small step over 2000 iterations, so watch them in any longer run.
 On one node with eight H100 PCIe (no NVLink) the throughput is 95% of linear on four GPUs and 91% on eight (2.57 s
 per iteration on one GPU, 2.83 s on eight); the extra time is the gradient all-reduce in the update. With
-`bf16_autocast` the same node ran one to four GPUs at 94% of linear, but eight GPUs hung in the first update in
-five tries (also with `TORCH_DISTRIBUTED_DEBUG=DETAIL`, `CUDA_MODULE_LOADING=EAGER`, `NCCL_P2P_DISABLE=1` and the
-default launch queues): some ranks stalled in a bf16 GEMM in the backward pass, the others in the gradient check
-after it. The cause is not known yet; use FP32 on eight GPUs until it is.
+`bf16_autocast` the same node ran one to four GPUs at 94% of linear, but eight GPUs hung in all seven tries: five in
+the first update (also with `TORCH_DISTRIBUTED_DEBUG=DETAIL`, `CUDA_MODULE_LOADING=EAGER`, `NCCL_P2P_DISABLE=1`
+and the default launch queues; some ranks stalled in a bf16 GEMM in the backward pass, the others in the gradient
+check after it), and after 7 and 16 iterations with dense routing, eager and with `update_graph`. FP32 on eight GPUs
+ran 2000 iterations without a hang. The cause is not known yet; use FP32 on eight GPUs until it is.
 
 The policy has little margin for action delay: evaluated with the joints one control step (20 ms) behind the
-policy, the released checkpoint's success rate drops from 96.1% to 91.1% on Newton, and two steps fail nearly every
-motion; Newton fine-tunes behave the same. Measure the robot's latency from observation to motor command before
-deploying.
+policy, the released checkpoint's success rate drops from 96.1% to 91.0% on Newton, and two steps fail nearly every
+motion; Newton fine-tunes behave the same. `manager_env.config.action_delay=[min, max]` delays the joints by `min` to
+`max` physics steps (5 ms each), drawn per env at every episode start; `[4, 4]` evaluates at a fixed one-control-step
+delay. Fine-tunes with the position rewards above (one GPU, small step, 500 iterations), with and without a random
+delay in training, evaluated on Newton (success rate):
+
+| Delay in training | 0 ms | 10 ms | 20 ms | 40 ms | Global position, no delay |
+|---|---|---|---|---|---|
+| none | 96.9% | 95.7% | 89.7% | 1.9% | +1 mm |
+| 0 to 10 ms | 96.4% | 96.0% | 92.1% | 9.8% | +19 mm |
+| 0 to 20 ms | 96.0% | 95.8% | 93.6% | 45.7% | +40 mm |
+
+(released checkpoint: 96.1%, 95.2%, 91.0%, 0.7%; global position relative to it). A random delay in training buys
+margin for long delays at the cost of no-delay tracking, mostly the global position; a heavier root term (weight 3.0)
+halves that drift but also the gain in local MPJPE, and 1000 iterations make it larger. At 10 ms all of them track
+about equally, so measure the robot's latency from observation to motor command before choosing.
 
 ## Measured on one H100 PCIe, 4096 envs (2026-11-09)
 
@@ -295,6 +316,11 @@ above them), the last one on a third node (2.31 s there without `update_graph`).
 
 On motions both stacks track, the released checkpoint's local MPJPE differs from PhysX by
 +0.05 mm with 1 substep and +0.36 mm with 2 substeps.
+
+The speed switches work in the eval as well (`sync_free_step`, `post_processing_graph`, `graph_decimation` and the four
+`fused_*` switches, with `CUDA_SCALE_LAUNCH_QUEUES=4x`): the released checkpoint's 4096-motion eval on Newton took
+11.1 min instead of 13.2 min (16.9 instead of 20.3 min with startup) on one H100 PCIe, at 96.36% against 96.12%
+and the same local MPJPE (−0.015 ± 0.025 mm) on motions both runs track, within the eval's rerun noise.
 
 The eval command merges `terminations=tracking/eval` into the training terminations, so the training-only
 `foot_pos_xyz` (an ankle more than 0.2 m from the reference) still ends episodes. Without it
