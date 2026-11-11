@@ -6,6 +6,7 @@ defaults:
   - _self_
 
 checkpoint: ???
+eval_motion_keys_file: null
 
 algo:
   config:

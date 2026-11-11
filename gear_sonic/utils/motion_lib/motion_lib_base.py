@@ -19,6 +19,7 @@ import torch.multiprocessing as mp
 
 from gear_sonic.isaac_utils import rotations
 from gear_sonic.trl.utils import common
+from gear_sonic.utils.motion_keys import load_motion_keys
 from gear_sonic.utils.motion_lib import skeleton
 
 
@@ -448,7 +449,17 @@ class MotionLibBase:
                 del data_list[k]
 
         max_unique_motions = self.m_cfg.get("max_unique_motions", None)
-        if max_unique_motions is not None and len(data_list) > max_unique_motions:
+        motion_keys_file = self.m_cfg.get("motion_keys_file", None)
+        if motion_keys_file is not None:
+            # Read names outside OmegaConf so literal '${...}' names are not interpolated.
+            exact_motion_keys = load_motion_keys(motion_keys_file)
+            missing = [key for key in exact_motion_keys if key not in data_list]
+            if missing:
+                raise ValueError(
+                    f"{len(missing)} exact evaluation motion keys are unavailable after filtering: {missing[:10]}"
+                )
+            data_list = {key: data_list[key] for key in exact_motion_keys}
+        elif max_unique_motions is not None and len(data_list) > max_unique_motions:
             import random
 
             keys = sorted(data_list.keys())  # Sort for determinism, then sample

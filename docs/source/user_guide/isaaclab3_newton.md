@@ -328,6 +328,12 @@ The eval command merges `terminations=tracking/eval` into the training terminati
 96.14% on Newton (1 substep, 2 mm gap) and 99.15% instead of 97.17% on Isaac Lab 2.3.2 + PhysX, with the same local
 MPJPE on motions both evals track.
 
+评测可选 `eval_motion_keys_file=/absolute/path/keys.json`（默认 `null`）。文件是非空 JSON 字符串列表，
+例如 `["motion_a", "motion_b"]`；名称按字面匹配，按文件顺序加载。指定后使用完整列表，忽略
+`max_unique_motions` 的随机抽样上限。重复、缺失或被已有 filter/remove 规则排除的 key 会报错。
+不指定时沿用原来的筛选与随机抽样。此参数只提供固定列表能力，正式动作集和条数仍由 SONIC team 决定。
+固定 key 不保证物理逐位确定；比较仍需重复评测、按动作名配对。
+
 ONNX exports from both stacks are identical for the released checkpoint. `torch.onnx.export` is
 called with `dynamo=False`, because torch 2.9 and later default to the dynamo exporter, which
 rejects the dict inputs used here.

@@ -52,6 +52,7 @@ import yaml
 from gear_sonic import train_agent_trl
 from gear_sonic.trl.utils import common as trl_utils_common, scheduler
 from gear_sonic.utils import common as rl_utils_common, config_utils, obs_utils
+from gear_sonic.utils.motion_keys import load_motion_keys
 
 config_utils.register_rl_resolvers()
 
@@ -128,6 +129,13 @@ def main(override_config: omegaconf.OmegaConf):
         config = omegaconf.OmegaConf.merge(config, eval_overrides)
     else:
         config = override_config
+
+    if config.get("eval_motion_keys_file") is not None:
+        keys_path = Path(hydra.utils.to_absolute_path(config.eval_motion_keys_file))
+        keys = load_motion_keys(keys_path)
+        with omegaconf.open_dict(config):
+            config.manager_env.commands.motion.motion_lib_cfg.motion_keys_file = str(keys_path)
+        logger.info(f"Evaluating {len(keys)} exact motion keys from {keys_path}")
 
     meta_path = Path(config.experiment_dir) / "meta.yaml"
     if meta_path.exists():
