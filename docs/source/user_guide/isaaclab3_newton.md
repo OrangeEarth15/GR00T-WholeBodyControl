@@ -238,10 +238,24 @@ desired KL 0.01) makes it worse on either backend: on PhysX the eval success rat
 
 With these settings, 500 iterations on Newton (2 substeps) lowered the local MPJPE on PhysX by 1.9 mm without
 losing success rate (98.1%, against 97.2% and 97.5% in two evals of the released checkpoint; reruns of the same
-eval differ by up to about 0.6 points, so compare MPJPE rather than small success-rate gaps). Leg and global position
-errors grow (+3 mm and +16 mm at 500
-iterations) and keep drifting in longer runs, so compare the checkpoints from 500 to 1000 iterations and check the
-legs before deploying one.
+eval differ by up to about 0.6 points, so compare MPJPE rather than small success-rate gaps). With the default
+position rewards, leg and global position errors grow (+3 to 4 mm and +12 to 19 mm at 500 iterations, about half of
+the legs' share also when fine-tuning on PhysX) and keep drifting in longer runs. A heavier root-position term and a
+tighter body-position term hold them:
+
+```sh
+++manager_env.rewards.tracking_anchor_pos.weight=1.5 ++manager_env.rewards.tracking_anchor_pos.params.std=0.2 \
+++manager_env.rewards.tracking_relative_body_pos.params.std=0.1
+```
+
+(defaults: weight 0.5 and std 0.3 for `tracking_anchor_pos`, std 0.3 for `tracking_relative_body_pos`). Two
+500-iteration fine-tunes with them (small step, 1 substep, 2 mm gap, every switch, bf16) evaluated at 96.85% and
+97.12% on Newton and 98.19% on PhysX, local MPJPE 2.1 to 3.1 mm lower than the released checkpoint, legs only +1.1
+to +1.9 mm and no global drift (−9 to +1 mm); after 1000 iterations the global position still did not drift (legs
++1.8 to +2.0 mm). Tightening the std alone halves the leg drift but doubles the global drift; the root term needs
+the weight. In MuJoCo sim2sim with the C++ deploy (50 training motions) these fine-tunes track with 3.7 to 4.2 mm
+lower local MPJPE than the released checkpoint and foot errors within 0.5 to 2.1 mm of it (the default rewards:
+2.4 to 3.0 mm and +3 to 6 mm).
 
 When resuming with `+resume=True`, set `algo.config.num_learning_iterations` to the absolute iteration count
 (for example 41550 + 2000): training stops once the global step reaches it.
@@ -250,7 +264,17 @@ On four GPUs (`accelerate launch --multi_gpu --num_processes 4`, 4096 envs each)
 2000 iterations on Newton (1 substep, 2 mm gap, every switch above) end at 96.68% on Newton and 97.44% on PhysX
 (one GPU with the default step: 92.4% and 92.9%), with 0.9-1.1 mm lower local MPJPE. Legs (+6 mm) and global position
 (+36 to 38 mm) drift about as much as with the small step over 2000 iterations, so watch them in any longer run.
-Throughput on four H100 PCIe is 91% of linear (2.64 s per iteration on one GPU, 2.90 s on four).
+On one node with eight H100 PCIe (no NVLink) the throughput is 95% of linear on four GPUs and 91% on eight (2.57 s
+per iteration on one GPU, 2.83 s on eight); the extra time is the gradient all-reduce in the update. With
+`bf16_autocast` the same node ran one to four GPUs at 94% of linear, but eight GPUs hung in the first update in
+five tries (also with `TORCH_DISTRIBUTED_DEBUG=DETAIL`, `CUDA_MODULE_LOADING=EAGER`, `NCCL_P2P_DISABLE=1` and the
+default launch queues): some ranks stalled in a bf16 GEMM in the backward pass, the others in the gradient check
+after it. The cause is not known yet; use FP32 on eight GPUs until it is.
+
+The policy has little margin for action delay: evaluated with the joints one control step (20 ms) behind the
+policy, the released checkpoint's success rate drops from 96.1% to 91.1% on Newton, and two steps fail nearly every
+motion; Newton fine-tunes behave the same. Measure the robot's latency from observation to motor command before
+deploying.
 
 ## Measured on one H100 PCIe, 4096 envs (2026-11-09)
 
