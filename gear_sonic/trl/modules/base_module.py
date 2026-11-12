@@ -32,9 +32,14 @@ class _AlignedLinear(nn.Linear):
     def forward(self, input):
         pad_in = -self.in_features % 4
         pad_out = -self.out_features % 4 if self.out_features >= 8 else 0
+        # F.pad copies even when it pads nothing, so pad only what needs it
+        if pad_in:
+            input = nn.functional.pad(input, (0, pad_in))
         weight = nn.functional.pad(self.weight, (0, pad_in, 0, pad_out))
-        bias = None if self.bias is None else nn.functional.pad(self.bias, (0, pad_out))
-        output = nn.functional.linear(nn.functional.pad(input, (0, pad_in)), weight, bias)
+        bias = self.bias
+        if pad_out and bias is not None:
+            bias = nn.functional.pad(bias, (0, pad_out))
+        output = nn.functional.linear(input, weight, bias)
         return output[..., : self.out_features] if pad_out else output
 
 
@@ -58,6 +63,7 @@ def align_linear_layers(module):
 
 
 _FP32_CLASSES = {}
+_BF16_CLASSES = {}
 
 
 def _fp32_class(cls):
@@ -70,6 +76,22 @@ def _fp32_class(cls):
 
         _FP32_CLASSES[cls] = type(f"FP32{cls.__name__}", (cls,), {"forward": forward})
     return _FP32_CLASSES[cls]
+
+
+def _bf16_class(cls):
+    """Subclass of the module class ``cls`` whose forward runs under bf16 autocast.
+
+    No weight-cast cache, as CUDA graph capture (algo.config.update_graph) requires; each weight is cast once
+    per forward anyway. A class rather than a wrapped bound method, so that copies of the module run themselves.
+    """
+    if cls not in _BF16_CLASSES:
+
+        def forward(self, *args, **kwargs):
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, cache_enabled=False):
+                return cls.forward(self, *args, **kwargs)
+
+        _BF16_CLASSES[cls] = type(f"BF16{cls.__name__}", (cls,), {"forward": forward})
+    return _BF16_CLASSES[cls]
 
 
 def autocast_bf16(model):
@@ -89,18 +111,8 @@ def autocast_bf16(model):
                 heads += 1
     for child in model.children():
         if any(isinstance(m, BaseModule) for m in child.modules()):
-            child.forward = _autocast(child.forward)
+            child.__class__ = _bf16_class(type(child))
     return heads
-
-
-def _autocast(forward):
-    # no weight-cast cache, as CUDA graph capture (algo.config.update_graph) requires; each weight is cast once per
-    # forward anyway
-    def autocast_forward(*args, **kwargs):
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, cache_enabled=False):
-            return forward(*args, **kwargs)
-
-    return autocast_forward
 
 
 class ResidualBlock(nn.Module):

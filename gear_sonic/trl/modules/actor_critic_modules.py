@@ -282,7 +282,7 @@ class Actor(nn.Module):
         # no check that reads it back to the host (one sync per call); a NaN can only come from a
         # non-finite update, which the trainer skips.
         std = self.get_std
-        self.distribution = Normal(mean, (mean * 0.0 + std).clamp(min=1e-6), validate_args=False)
+        self.distribution = Normal(mean, (mean * 0.0 + std).clamp(min=1e-6))
 
     def act(self, obs_dict, episode_attnmask=None, **kwargs):
         """Sample actions from the current policy for a single timestep.
@@ -554,7 +554,7 @@ class Actor(nn.Module):
         self.dones_buffer = None
         self.steps = 0
         del self.distribution
-        # reset, not deleted: with algo.config.update_graph the training forward that sets them only runs at capture
+        # reset, not deleted: with algo.config.update_graph the forward that sets them runs only at capture
         self.aux_losses = None
         self.aux_loss_coef = None
 

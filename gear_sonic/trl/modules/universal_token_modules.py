@@ -225,11 +225,6 @@ class UniversalTokenModule(nn.Module):
                 "G1 latents for SMPL-native envs computed only in aux losses when compliance=0."
             )
 
-        # Cache for last encoded tokens (for external access, e.g., by callbacks)
-        # These are populated during forward() and can be read afterwards
-        self._last_encoded_tokens = None  # dict[encoder_name -> Tensor]
-        self._last_encoded_latents = None  # dict[encoder_name -> Tensor] (pre-quantization)
-
         self.env_config = env_config
         self.algo_config = algo_config
         self.encoders_cfg = encoders
@@ -272,6 +267,10 @@ class UniversalTokenModule(nn.Module):
         for name, loss_func in aux_loss_func.items():
             self.aux_loss_func[name] = common.custom_instantiate(loss_func, _resolve=False)
         self.aux_loss_coef = aux_loss_coef
+        if dense_routing:
+            unmasked = [n for n, f in self.aux_loss_func.items() if not getattr(f, "supports_dense_routing", True)]
+            if unmasked:
+                raise NotImplementedError(f"dense_routing does not mask the paired latents of {unmasked}")
 
         module_input_candidate_params = ["input_dim"]
 
@@ -977,12 +976,6 @@ class UniversalTokenModule(nn.Module):
         # POST-QUANTIZATION MODE: add residual after FSQ tokens (default)
         if latent_residual is not None and latent_residual_mode == "post_quantization":
             all_tokens = all_tokens + residual_reshaped
-
-        # Cache tokens for external access (e.g., by callbacks)
-        # kept on device: .cpu() here was a blocking copy on every forward pass, and nothing in
-        # this repo reads these
-        self._last_encoded_tokens = {k: v.detach() for k, v in encoded_tokens.items()}
-        self._last_encoded_latents = {k: v.detach() for k, v in encoded_latents.items()}
 
         # Cache flattened full latent on device for reward computation (token smoothness)
         # all_tokens is the post-quantization token that gets sent to decoder

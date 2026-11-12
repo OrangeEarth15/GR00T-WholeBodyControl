@@ -866,6 +866,9 @@ class G1SmplComplianceLatentLoss(nn.Module):
     when using the default module configuration.
     """
 
+    # reads paired latents that dense_routing computes over every row, not only the paired ones
+    supports_dense_routing = False
+
     def __init__(
         self,
         loss_type: str = "mse",
@@ -943,6 +946,9 @@ class TeleopSmplComplianceLatentLoss(nn.Module):
     Note: Teleop latents are pre-detached in UniversalTokenModule for memory optimization.
     The detach_teleop_target parameter is kept for API compatibility.
     """
+
+    # reads paired latents that dense_routing computes over every row, not only the paired ones
+    supports_dense_routing = False
 
     def __init__(
         self,
@@ -1033,6 +1039,9 @@ class ReencodedSmplG1ComplianceLatentLoss(nn.Module):
     Note: Target G1 latents (original_g1_latents_for_reencode) are pre-detached
     in UniversalTokenModule. The detach_target parameter is kept for API compatibility.
     """
+
+    # reads paired latents that dense_routing computes over every row, not only the paired ones
+    supports_dense_routing = False
 
     def __init__(
         self,
