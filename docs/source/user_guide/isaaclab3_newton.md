@@ -127,12 +127,11 @@ motion straight from the motion library and the robot state from Isaac Lab's War
     ++manager_env.config.fused_command=True ++manager_env.config.fused_obs=True
 ```
 
-In check mode (256 envs, 96 steps) the observation terms are within 7.2e-7 of the torch terms (the pure
-gathers are equal), the metrics within 1.4e-6, the relative body frames within 7.6e-6 m and 3e-7, the
-rewards within 6.6e-7 relative, and the terminations are identical. With all four on, graph replays still
-match the eager step bit for bit (282 items over 300 steps). The critic's `motion_anchor_pos_b` stays a torch
-term: Isaac Lab 3.0 adds its default `mask_out_z` to the term's parameters, which the Warp version does not
-implement.
+In check mode (256 envs, 96 steps) the 14 observation terms are within 7.2e-7 of the torch terms (the pure
+gathers are equal), the metrics within 1.9e-6, the relative body frames within 7.6e-6 m and 2.7e-7, the
+rewards within 1.3e-6 relative, and the terminations are identical. With all four on, graph replays still
+match the eager step bit for bit (282 tensors at each of 60 steps: training, after an adaptive sampling
+update, evaluation mode, training again, after a motion reload).
 
 With the post-processing graph, the four switches cut its GPU time per control step from 3.9 ms (1225
 kernels) to 2.7 ms (518 kernels). On one H100 PCIe (1 substep, 2 mm gap, 4096 envs) the collection takes
@@ -159,7 +158,9 @@ update takes 1.11 s instead of 1.17 s per iteration.
 `algo.config.actor.backbone.dense_routing=True` instead runs every encoder on the whole minibatch, as rollout
 inference does, and evaluates the latent alignment losses under row masks: static shapes and no syncs from the
 routing, the same values and gradients up to float rounding (FP32: 1.6e-6 relative; with the trainer's TF32
-matmuls the encoder weight gradients round differently by up to 2e-4). Every encoder then encodes all 24576
+matmuls the encoder weight gradients round differently by up to 2e-4). The encoders then see other batch sizes, and
+the FSQ quantizer can turn such a rounding difference into a neighboring code: in rollouts about 0.3% of the rows
+get an action that differs by a few hundredths, all others are bitwise equal. Every encoder then encodes all 24576
 rows of a minibatch, about 1.6 times the encoder work, and the update gets slower (1.20 s to 1.31 s per
 iteration), so it is off by default. Compiling the encoders and decoders with `torch.compile` did not help
 either (1.163 s against 1.165-1.171 s per iteration).

@@ -199,7 +199,8 @@ class UniversalTokenModule(nn.Module):
                 forward.  All decoders are run when ``None``.
             dense_routing: Also in training, run every encoder on the whole batch, pick each row's
                 tokens with ``torch.where`` and evaluate the latent alignment losses under row masks.
-                Same values and gradients as the boolean-indexed routing up to float rounding, with
+                Same values and gradients as the boolean-indexed routing up to float rounding (which the
+                FSQ quantizer can turn into a neighboring code: about 0.3% of the rows in rollouts), with
                 static shapes and no host syncs, at the cost of encoding every row with every encoder.
                 Inference without gradients always routes this way.
             **kwargs: Absorbed for forward-compatibility.
