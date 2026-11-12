@@ -67,6 +67,16 @@ console_ = console.Console()
 import time  # noqa: E402
 
 
+def load_optimizer_state(optimizer, state):
+    """``optimizer.load_state_dict(state)``, keeping this run's implementation (fused, capturable, ...) rather than
+    the one the checkpoint was saved with; torch then also puts the step counters where that implementation needs
+    them (the released checkpoint was saved by a non-fused AdamW, with the steps on the CPU)."""
+    live = getattr(optimizer, "optimizer", optimizer).defaults
+    flags = {k: live[k] for k in ("fused", "foreach", "capturable", "differentiable") if k in live}
+    for group in state["param_groups"]:
+        group.update(flags)
+    optimizer.load_state_dict(state)
+
 class PolicyAndValueWrapper(nn.Module):
     """Wrap policy, value, and optional discriminator models into a single nn.Module.
 
@@ -646,8 +656,9 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
         # see https://gist.github.com/vwxyzjn/2581bff1e48e185e0b85b6dfe1def79c
         torch.manual_seed(args.seed)
 
-        # Building DDP fixes the stream of every parameter's gradient accumulator. With algo.config.update_graph on
-        # several GPUs the backward is captured, and accumulators on the legacy stream would have it wait on the capture.
+        # Building DDP fixes the stream of every parameter's gradient accumulator. With algo.config.update_graph
+        # on several GPUs the backward is captured, and accumulators on the legacy stream would make it wait on
+        # the capture.
         side = None
         if self.config.get("update_graph", False) and accelerator.num_processes > 1:
             side = torch.cuda.Stream()
@@ -2239,7 +2250,7 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
                 "optimizer_state_dict" in checkpoint
                 and checkpoint["optimizer_state_dict"] is not None
             ):
-                self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                load_optimizer_state(self.optimizer, checkpoint["optimizer_state_dict"])
 
                 # Update learning rate if available
                 if "args" in checkpoint and hasattr(checkpoint["args"], "learning_rate"):
