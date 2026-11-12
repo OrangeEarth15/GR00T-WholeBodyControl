@@ -58,15 +58,16 @@ Append these overrides to the usual training, eval or export commands:
 | `manager_env.config.newton.gap` | 0.01 | contact detection distance [m]; most of the trimesh collision cost scales with it. 0.002 made training iterations 1.15x faster (1 substep) and left the released checkpoint's eval unchanged (96.1% vs 96.4%, within error) |
 | `manager_env.config.newton.graph_decimation` | False | capture all physics steps of a control step in one CUDA graph. Isaac Lab 3.0 does this by itself only for robots with non-implicit actuators. Same throughput and eval on its own (the GPU had no gaps between the per-step graphs), but `sim.step` no longer blocks the CPU, which overlapping post-processing with physics needs. Changes the update rate of sensor histories (contact forces) and of finite-difference joint accelerations from per physics step to per control step |
 | `manager_env.config.sync_free_step` | False | reset terminated envs through masks instead of `reset_buf.nonzero()`, so `env.step` has no host sync; see below |
-| `manager_env.config.post_processing_graph` | False | with `sync_free_step`: record the post-processing as one CUDA graph and replay it; see below |
-| `manager_env.config.fused_rewards` | False | evaluate the tracking reward set in one Warp kernel; `fused_rewards_check=True` compares it with the stock terms |
+| `manager_env.config.post_processing_graph` | False | needs `sync_free_step`: record the post-processing as one CUDA graph and replay it. A replay keeps the Python values read at capture, so it refuses the `*_check` switches and trainer schedules of env values; see below |
+| `manager_env.config.fused_rewards` | False | evaluate the tracking reward set in one Warp kernel; weights and parameters changed at run time apply from the next step; `fused_rewards_check=True` compares it with the stock terms |
 | `manager_env.config.fused_terminations` | False | evaluate the five tracking terminations in one Warp kernel; `fused_terminations_check=True` counts mismatches with the stock terms |
 | `manager_env.config.fused_command` | False | the tracking command's relative body frames and metrics as one Warp kernel each; `fused_command_check=True` compares them with the torch versions |
-| `manager_env.config.fused_obs` | False | 13 tokenizer and critic observation terms as Warp kernels (SMPL, multi-future joints / root height / root orientation, anchor and body frames, VR points); `fused_obs_check=True` compares them with the stock terms |
+| `manager_env.config.fused_obs` | False | 14 tokenizer and critic observation terms as Warp kernels (SMPL, multi-future joints / root height / root orientation, anchor and body frames, VR points); `fused_obs_check=True` compares them with the stock terms |
 | `algo.config.actor.backbone.dense_routing` | False | run every encoder on the whole minibatch in the PPO update and evaluate the latent alignment losses under row masks: static shapes, no host syncs |
 | `algo.config.align_linear` | False | zero-pad the matmuls of Linear layers whose sizes are not multiples of 4, so cuBLAS uses its aligned TF32 kernels; parameters keep their shapes; see below |
 | `algo.config.bf16_autocast` | False | policy and critic under bf16 autocast, output layers in FP32; see below |
-| `manager_env.config.action_delay` | None | `[min, max]` in physics steps (5 ms): the joints apply the action the policy chose `d` physics steps earlier, `d` drawn per env at every episode start; the policy still observes its latest action. `[4, 4]` is a fixed one-control-step delay, e.g. for an eval; with `graph_decimation` only whole control steps; see below |
+| `manager_env.config.action_delay` | None | `[min, max]` in physics steps (5 ms): the joints apply the action the policy chose `d` physics steps earlier, `d` drawn per env uniformly at every episode start; the policy still observes its latest action. `[4, 4]` is a fixed one-control-step delay, e.g. for an eval; with `graph_decimation` only whole control steps, drawn as whole control steps; see below |
+| `eval_motion_keys_file` | null | evaluate exactly the motions named in a JSON list, in that order, instead of drawing `max_unique_motions` of them; see below |
 | `algo.config.update_graph` | False | capture each PPO minibatch step as one CUDA graph and replay it, on several GPUs with DDP's collectives in the graph; needs `dense_routing` and torch's fused AdamW; see below |
 
 ## Overlapping post-processing with physics
@@ -273,11 +274,10 @@ On four GPUs (`accelerate launch --multi_gpu --num_processes 4`, 4096 envs each)
 (+36 to 38 mm) drift about as much as with the small step over 2000 iterations, so watch them in any longer run.
 On one node with eight H100 PCIe (no NVLink) the throughput is 95% of linear on four GPUs and 91% on eight (2.57 s
 per iteration on one GPU, 2.83 s on eight); the extra time is the gradient all-reduce in the update. With
-`bf16_autocast` the same node ran one to four GPUs at 94% of linear, but eight GPUs hung in all seven tries: five in
-the first update (also with `TORCH_DISTRIBUTED_DEBUG=DETAIL`, `CUDA_MODULE_LOADING=EAGER`, `NCCL_P2P_DISABLE=1`
-and the default launch queues; some ranks stalled in a bf16 GEMM in the backward pass, the others in the gradient
-check after it), and after 7 and 16 iterations with dense routing, eager and with `update_graph`. FP32 on eight GPUs
-ran 2000 iterations without a hang. The cause is not known yet; use FP32 on eight GPUs until it is.
+`bf16_autocast` the same node ran one to four GPUs at 94% of linear. Eight GPUs hung there because one of its GPUs
+is faulty: bf16 cuBLAS GEMMs never finish on it, even in a plain PyTorch loop on that GPU alone, while the other seven
+GPUs run the same code. bf16 on those seven ran at 87% of linear (2.58 s per iteration; 2.43 s with dense routing and
+`update_graph`). FP32 on eight GPUs, faulty one included, ran 2000 iterations without a hang.
 
 The policy has little margin for action delay: evaluated with the joints one control step (20 ms) behind the
 policy, the released checkpoint's success rate drops from 96.1% to 91.0% on Newton, and two steps fail nearly every
@@ -328,11 +328,10 @@ The eval command merges `terminations=tracking/eval` into the training terminati
 96.14% on Newton (1 substep, 2 mm gap) and 99.15% instead of 97.17% on Isaac Lab 2.3.2 + PhysX, with the same local
 MPJPE on motions both evals track.
 
-评测可选 `eval_motion_keys_file=/absolute/path/keys.json`（默认 `null`）。文件是非空 JSON 字符串列表，
-例如 `["motion_a", "motion_b"]`；名称按字面匹配，按文件顺序加载。指定后使用完整列表，忽略
-`max_unique_motions` 的随机抽样上限。重复、缺失或被已有 filter/remove 规则排除的 key 会报错。
-不指定时沿用原来的筛选与随机抽样。此参数只提供固定列表能力，正式动作集和条数仍由 SONIC team 决定。
-固定 key 不保证物理逐位确定；比较仍需重复评测、按动作名配对。
+A fixed motion set makes success rates comparable across evals: `eval_motion_keys_file=/absolute/path/keys.json`
+evaluates exactly the motions in that JSON list of names, in its order, instead of drawing
+`max_unique_motions` of them. Duplicate names, and names that are missing or removed by the configured filters,
+are errors. The physics is still not bitwise deterministic, so compare evals motion by motion.
 
 ONNX exports from both stacks are identical for the released checkpoint. `torch.onnx.export` is
 called with `dynamo=False`, because torch 2.9 and later default to the dynamo exporter, which

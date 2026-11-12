@@ -43,7 +43,7 @@ class MotionKeySelectionTest(unittest.TestCase):
             with self.subTest(cfg=cfg), self.assertRaisesRegex(ValueError, "unavailable after filtering"):
                 self.select(keys, **cfg)
 
-    def test_default_sampling_still_uses_seed_and_cap(self):
+    def test_default_sampling_is_deterministic_and_capped(self):
         state = random.getstate()
         self.addCleanup(random.setstate, state)
         random.seed(13)

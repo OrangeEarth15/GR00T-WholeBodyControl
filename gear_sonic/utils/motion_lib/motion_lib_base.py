@@ -2476,7 +2476,7 @@ class MotionLibBase:
         """Update adaptive sampling statistics based on training outcomes.
 
         Increments episode counts for all sampled bins, and failure counts for bins
-        where the policy terminated early. Uses bincount for efficient batched updates
+        where the policy terminated early. Uses index_add_ (no host sync) for batched updates
         when multiple environments hit the same bin.
 
         Args:
