@@ -1012,6 +1012,11 @@ class ModularTrackingEnvCfg(ManagerBasedRLEnvCfg):
                     articulation_props=urdf_spawn.articulation_props,
                 )
             )
+        if config.get("physics_backend", "physx") == "newton" and self.scene.robot.joint_ordering is None:
+            raise NotImplementedError(
+                f"robot '{robot_type}' does not pin its joint and body order (see robots/g1.py); on Newton they "
+                "would follow Newton's native order, not the Isaac Lab 2.3 PhysX order SONIC indexes them by"
+            )
         self.actions.joint_pos.scale = robot_mapping[config["robot"].get("type", "g1")][
             "action_scale"
         ]

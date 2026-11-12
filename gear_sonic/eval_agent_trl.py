@@ -30,9 +30,7 @@ except ImportError:
     import sys
     sys.exit(1)
 
-import contextlib  # noqa: I001
-import filelock
-import json
+import json  # noqa: I001
 import os
 import shutil
 import sys
@@ -320,18 +318,7 @@ def main(override_config: omegaconf.OmegaConf):
                     if "motion_lib_cfg" in env_config.commands.motion:
                         env_config.commands.motion.motion_lib_cfg.filter_motion_keys = filter_keys
 
-    # Isaac Lab 3.0: launch_simulation() decides from the env config whether Kit is needed
-    # (PhysX, RTX cameras) or the run is kit-less (Newton); see train_agent_trl.main.
-    from isaaclab.app import launch_simulation
-
-    env_instance_cfg = train_agent_trl.custom_instantiate(config.manager_env)
-    env_instance_cfg.sim.device = device
-    sim_runtime = contextlib.ExitStack()
-    with filelock.FileLock("/tmp/isaaclab_app_launcher.lock"):  # noqa: S108
-        sim_runtime.enter_context(
-            launch_simulation(env_instance_cfg, {"device": device, "distributed": config.multi_gpu})
-        )
-    env = train_agent_trl.create_manager_env(config, device, config.headless, env_instance_cfg)
+    env, sim_runtime = train_agent_trl.launch_manager_env(config, device)  # noqa: F841 (kept open)
 
     module_dim_dict = getattr(config.algo.config, "module_dim", {})
     policy_backbone_kwargs = {}

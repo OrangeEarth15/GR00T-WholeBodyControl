@@ -95,6 +95,42 @@ def resume_checkpoint(config):
     config.checkpoint = config.checkpoint
 
 
+def launch_manager_env(config, device):
+    """Start the simulation runtime and build the wrapped env; returns (env, runtime).
+
+    Isaac Lab 3.0's launch_simulation() reads the env config to decide whether Isaac Sim (Kit) is needed
+    (PhysX, RTX cameras) or the run is kit-less (Newton), so the config is built first. Keep the returned
+    runtime open as long as the env is used.
+    """
+    from isaaclab.app import launch_simulation
+
+    env_instance_cfg = custom_instantiate(config.manager_env)
+    env_instance_cfg.sim.device = device
+    runtime = contextlib.ExitStack()
+    # Kit cannot start in several processes at the same time
+    with FileLock("/tmp/isaaclab_app_launcher.lock"):  # noqa: S108
+        runtime.enter_context(
+            launch_simulation(env_instance_cfg, {"device": device, "distributed": config.multi_gpu})
+        )
+    return create_manager_env(config, device, config.headless, env_instance_cfg), runtime
+
+
+def _check_switches(config, switches):
+    """Refuse switch combinations that would silently do nothing or silently freeze values."""
+    if not switches.get("post_processing_graph", False):
+        return
+    if not switches.get("sync_free_step", False):
+        raise ValueError("post_processing_graph records the sync-free step: set sync_free_step=True")
+    checks = [k for k in switches if k.startswith("fused_") and k.endswith("_check") and switches[k]]
+    if checks:
+        raise ValueError(f"{checks} compare in Python, which a graph replay skips: turn off post_processing_graph")
+    # a replay keeps every Python value the post-processing read at capture (weights, ranges, thresholds)
+    schedule = config.get("trainer", {}).get("schedule_dict") or {}
+    schedules = [key for key in schedule if key.split("@")[0] == "env"]
+    if schedules:
+        raise NotImplementedError(f"post_processing_graph cannot follow schedules of env values: {schedules}")
+
+
 def create_manager_env(config, device, headless, env_instance_cfg):
 
     # import wandb
@@ -140,8 +176,8 @@ def create_manager_env(config, device, headless, env_instance_cfg):
                         f"  - env_instance_cfg : {val2!r}\n"
                     )
 
+    _check_switches(config, env_instance_cfg.config)
     env_instance_cfg.seed = config.seed
-    env_instance_cfg.sim.device = device
     env_instance_cfg.config["headless"] = headless
     env = ManagerBasedRLEnv(
         cfg=env_instance_cfg, render_mode="rgb_array" if not headless else None
@@ -311,19 +347,7 @@ def main(config: OmegaConf):
     env_config.config.save_rendering_dir = str(Path(config.experiment_dir) / "renderings_training")
     env_config.config.experiment_dir = str(Path(config.experiment_dir))
 
-    # Isaac Lab 3.0: launch_simulation() reads the env config to decide whether Isaac Sim (Kit) is
-    # needed (PhysX, RTX cameras) or the run is kit-less (Newton), so the config is built first.
-    from isaaclab.app import launch_simulation
-
-    env_instance_cfg = custom_instantiate(config.manager_env)
-    env_instance_cfg.sim.device = device
-    sim_runtime = contextlib.ExitStack()
-    # Kit cannot start in several processes at the same time
-    with FileLock("/tmp/isaaclab_app_launcher.lock"):
-        sim_runtime.enter_context(
-            launch_simulation(env_instance_cfg, {"device": device, "distributed": config.multi_gpu})
-        )
-    env = create_manager_env(config, device, config.headless, env_instance_cfg)
+    env, sim_runtime = launch_manager_env(config, device)  # noqa: F841 (kept open for the whole run)
     if config.get("replay", False):
         _save_video_path = config.get("replay_save_video", None)
         env.run_replay(

@@ -11,8 +11,8 @@ iterations 3.37 s -> 2.84 s with all three).
 
 ``enable`` checks that the task only uses what is implemented here, which is what sonic_release uses: no
 curriculum, recorder or reset-mode event terms, no stateful observation, reward or termination terms,
-``push_by_setting_velocity`` as the only interval event, joint actions, and the tracking command with a time_out
-termination.
+``push_by_setting_velocity`` as the only interval event, joint actions, implicit actuators, and the tracking
+command with a time_out termination.
 
 With ``graph=True`` (``manager_env.config.post_processing_graph``) the post-processing is recorded once as a
 CUDA graph and replayed in later steps (see ``PostProcessingGraph``), so the CPU launches it with one call.
@@ -66,6 +66,15 @@ def enable(env, graph: bool = False):
         isinstance(term, JointAction) for term in env.action_manager._terms.values()
     ):  # noqa: SLF001
         unsupported.append("non-joint action terms")
+    for name, articulation in env.scene.articulations.items():
+        # Articulation.reset(env_mask=...) resets the actuator groups of every env, not only the masked ones
+        explicit = [
+            group
+            for group, cfg in articulation.cfg.actuators.items()
+            if not getattr(cfg.class_type, "is_implicit_model", False)
+        ]
+        if explicit:
+            unsupported.append(f"explicit actuators {explicit} on '{name}'")
     commands = env.command_manager._terms.values()  # noqa: SLF001
     if not all(isinstance(term, TrackingCommand) for term in commands):
         unsupported.append("command terms other than TrackingCommand")
@@ -252,7 +261,8 @@ class PostProcessingGraph:
 
     def __init__(self, env, warmup_steps: int = 2):
         self.env = env
-        # eager steps first: they allocate buffers and load kernels
+        # eager steps first: they allocate buffers, load kernels and let lazily added state appear (the tracking
+        # command's metrics grow from 8 to 10 entries in its first update); capturing earlier breaks the replay
         self.warmup_steps = warmup_steps
         self.graphs = {}  # flags -> (graph, outputs, pinned slots)
 
