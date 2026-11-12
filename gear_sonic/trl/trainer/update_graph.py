@@ -10,9 +10,9 @@ graph removes the launch cost. The step must then make no host decision, so two 
   AdamW reads to skip the step on the device; skipped steps are counted and printed once per update.
 
 Requirements, checked at setup: one micro-batch per minibatch, dense encoder routing (static shapes), no symmetry
-or image-augmentation losses, and torch's fused AdamW (transformers' default optimizer with torch >= 2.8). The
-first minibatches run eagerly on a side stream (warm-up); then one is captured, and every later one copies its rows
-into the captured input buffers and replays.
+or image-augmentation losses, no log-std parameterization or multi-critic advantage weights, and torch's fused
+AdamW (transformers' default optimizer with torch >= 2.8). The first minibatches run eagerly on a side stream
+(warm-up); then one is captured, and every later one copies its rows into the captured input buffers and replays.
 
 On several GPUs the graph also records the step's NCCL collectives: DDP's buffer broadcast in the forward and its
 gradient all-reduce in the backward, and the gather of the KL for the learning rate. As PyTorch's notes on CUDA
@@ -54,6 +54,11 @@ class UpdateGraph:
             raise ValueError("update_graph needs one micro-batch per minibatch")
         if trainer.use_symmetry or trainer.compute_imgaug_bc_loss:
             raise ValueError("update_graph does not support the symmetry or image-augmentation losses")
+        # both read the host in the step: a NaN check on log_std, a host-to-device copy of the weights
+        if trainer.multi_critic_advantage_weights is not None or any(
+            getattr(m, "use_log_std", False) for m in trainer.policy_model.modules()
+        ):
+            raise ValueError("update_graph does not support use_log_std or multi_critic_advantage_weights")
         if not any(getattr(m, "dense_routing", False) for m in trainer.policy_model.modules()):
             raise ValueError("update_graph needs static shapes: set algo.config.actor.backbone.dense_routing=True")
         optimizer = getattr(trainer.optimizer, "optimizer", trainer.optimizer)
