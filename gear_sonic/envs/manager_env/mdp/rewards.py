@@ -517,7 +517,7 @@ def tracking_relative_body_ori_weighted_error(
         ** 2
     )
     if body_weights is not None:
-        tracked_names = [command.cfg.body_names[i] for i in body_indexes]
+        tracked_names = [n for n in command.cfg.body_names if body_names is None or n in body_names]
         weights = torch.tensor(
             [body_weights.get(name, 1.0) for name in tracked_names],
             device=error.device,

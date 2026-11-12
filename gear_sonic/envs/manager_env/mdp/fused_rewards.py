@@ -1,11 +1,12 @@
-"""Fused Warp evaluation of the tracking reward terms (Direct-Warp step A').
+"""Fused Warp evaluation of the tracking reward terms.
 
 The sonic_release reward set (rewards/tracking/base_5point_local_feet_acc) is twelve small terms.
 Evaluated one by one in torch they cost about 200 kernel launches per control step.
-FusedRewardManager computes all twelve raw values in one Warp kernel, reading robot state straight
-from the Isaac Lab Warp buffers, then applies weights and episode sums exactly like
-isaaclab.managers.RewardManager.compute. If the configured terms are not all supported (another
-function, or a parameter the kernel does not model) it keeps the stock per-term path.
+FusedRewardManager computes all twelve raw values in one Warp kernel, reading the reference motion at the
+current frame from the motion library and the robot state from the Isaac Lab Warp buffers, then applies
+weights and episode sums exactly like isaaclab.managers.RewardManager.compute. If the configured terms are
+not all supported (another function, or a parameter the kernel does not model) it keeps the stock per-term
+path. Weights and parameters changed at run time (a schedule) are picked up on the next step.
 
 Enable with ++manager_env.config.fused_rewards=True. With
 ++manager_env.config.fused_rewards_check=True the stock terms are also evaluated every step and the
@@ -20,6 +21,20 @@ import warp as wp
 
 from gear_sonic.envs.manager_env import mdp
 from gear_sonic.envs.manager_env.mdp.commands import _get_body_indexes
+from gear_sonic.envs.manager_env.mdp.fused_warp import (
+    Cursor,
+    cursor,
+    env3,
+    frame,
+    int_array,
+    lib3,
+    lib4,
+    qapply,
+    qinv,
+    quat_error,
+    ref,
+    wxyz,
+)
 
 # Term kinds, in the order the kernel evaluates them.
 (
@@ -63,70 +78,17 @@ _GAUSSIAN_KINDS = (
 )
 
 
-@wp.func
-def _quat_mul(a: wp.vec4, b: wp.vec4) -> wp.vec4:
-    """Hamilton product of (w, x, y, z) quaternions."""
-    return wp.vec4(
-        a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
-        a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
-        a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1],
-        a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0],
-    )
-
-
-@wp.func
-def _quat_error(q1: wp.vec4, q2: wp.vec4) -> float:
-    """math_wxyz.quat_error_magnitude: norm of the axis-angle of q1 * conj(q2)."""
-    d = _quat_mul(q1, wp.vec4(q2[0], -q2[1], -q2[2], -q2[3]))
-    if d[0] < 0.0:
-        d = -d
-    mag = wp.sqrt(d[1] * d[1] + d[2] * d[2] + d[3] * d[3])
-    half = wp.atan2(mag, d[0])
-    angle = 2.0 * half
-    s = 0.5 - angle * angle / 48.0
-    if wp.abs(angle) > 1.0e-6:
-        s = wp.sin(half) / angle
-    return mag / s
-
-
-@wp.func
-def _quat_apply(q: wp.vec4, v: wp.vec3) -> wp.vec3:
-    xyz = wp.vec3(q[1], q[2], q[3])
-    t = 2.0 * wp.cross(xyz, v)
-    return v + q[0] * t + wp.cross(xyz, t)
-
-
-@wp.func
-def _quat_inv(q: wp.vec4) -> wp.vec4:
-    return wp.vec4(q[0], -q[1], -q[2], -q[3]) / wp.max(wp.dot(q, q), 1.0e-9)
-
-
-@wp.func
-def _wxyz(q: wp.quatf) -> wp.vec4:
-    """Isaac Lab Warp buffers hold (x, y, z, w)."""
-    return wp.vec4(q[3], q[0], q[1], q[2])
-
-
-@wp.func
-def _vec3(a: wp.array3d(dtype=float), e: int, i: int) -> wp.vec3:
-    return wp.vec3(a[e, i, 0], a[e, i, 1], a[e, i, 2])
-
-
-@wp.func
-def _vec4(a: wp.array3d(dtype=float), e: int, i: int) -> wp.vec4:
-    return wp.vec4(a[e, i, 0], a[e, i, 1], a[e, i, 2], a[e, i, 3])
-
-
 @wp.kernel
 def _tracking_rewards_kernel(
-    # reference motion, torch tensors, quaternions (w, x, y, z)
-    ref_anchor_pos: wp.array2d(dtype=float),
-    ref_anchor_quat: wp.array2d(dtype=float),
-    ref_body_pos: wp.array3d(dtype=float),
-    ref_body_quat: wp.array3d(dtype=float),
-    ref_body_lin_vel: wp.array3d(dtype=float),
-    ref_body_ang_vel: wp.array3d(dtype=float),
-    ref_points: wp.array3d(dtype=float),
+    # reference motion: the motion library at the command's frame, quaternions (w, x, y, z)
+    c: Cursor,
+    lib_body_pos: wp.array3d(dtype=float),
+    lib_body_quat: wp.array3d(dtype=float),
+    lib_body_lin_vel: wp.array3d(dtype=float),
+    lib_body_ang_vel: wp.array3d(dtype=float),
+    env_origins: wp.array2d(dtype=float),
+    body_pos_relative: wp.array3d(dtype=float),
+    body_quat_relative: wp.array3d(dtype=float),
     # robot state, Isaac Lab Warp buffers
     body_pos: wp.array2d(dtype=wp.vec3f),
     body_quat: wp.array2d(dtype=wp.quatf),
@@ -138,11 +100,13 @@ def _tracking_rewards_kernel(
     contact_forces: wp.array3d(dtype=wp.vec3f),
     action: wp.array2d(dtype=float),
     prev_action: wp.array2d(dtype=float),
-    # robot body / joint / sensor indices
-    anchor_body: int,
+    # body / joint / sensor indices: robot order unless named *_motion
+    robot_anchor: int,
+    motion_anchor: int,
     tracked_bodies: wp.array(dtype=wp.int32),
     shake_bodies: wp.array(dtype=wp.int32),
     point_bodies: wp.array(dtype=wp.int32),
+    point_bodies_motion: wp.array(dtype=wp.int32),
     point_offsets: wp.array(dtype=wp.vec3f),
     limit_joints: wp.array(dtype=wp.int32),
     acc_joints: wp.array(dtype=wp.int32),
@@ -156,21 +120,22 @@ def _tracking_rewards_kernel(
     raw: wp.array2d(dtype=float),
 ):
     e = wp.tid()
-    robot_anchor_pos = body_pos[e, anchor_body]
-    robot_anchor_quat = _wxyz(body_quat[e, anchor_body])
-    ref_anchor_p = wp.vec3(ref_anchor_pos[e, 0], ref_anchor_pos[e, 1], ref_anchor_pos[e, 2])
-    ref_anchor_q = wp.vec4(
-        ref_anchor_quat[e, 0], ref_anchor_quat[e, 1], ref_anchor_quat[e, 2], ref_anchor_quat[e, 3]
-    )
+    f = frame(c, e)
+    ee = wp.int64(e)
+    origin = env3(env_origins, e)
+    robot_anchor_pos = body_pos[e, robot_anchor]
+    robot_anchor_quat = wxyz(body_quat[e, robot_anchor])
+    ref_anchor_pos = lib3(lib_body_pos, f, motion_anchor) + origin
+    ref_anchor_quat = lib4(lib_body_quat, f, motion_anchor)
 
     col = columns[ANCHOR_POS]
     if col >= 0:
-        da = ref_anchor_p - robot_anchor_pos
+        da = ref_anchor_pos - robot_anchor_pos
         raw[e, col] = wp.exp(-wp.dot(da, da) / variance[ANCHOR_POS])
 
     col = columns[ANCHOR_ORI]
     if col >= 0:
-        err = _quat_error(ref_anchor_q, robot_anchor_quat)
+        err = quat_error(ref_anchor_quat, robot_anchor_quat)
         raw[e, col] = wp.exp(-err * err / variance[ANCHOR_ORI])
 
     # tracked bodies: position / orientation (anchor-relative reference), linear / angular velocity
@@ -181,13 +146,13 @@ def _tracking_rewards_kernel(
     ang_sq = float(0.0)
     for i in range(num_tracked):
         b = tracked_bodies[i]
-        dp = _vec3(ref_body_pos, e, i) - body_pos[e, b]
+        dp = lib3(body_pos_relative, ee, i) - body_pos[e, b]
         pos_sq += wp.dot(dp, dp)
-        err = _quat_error(_vec4(ref_body_quat, e, i), _wxyz(body_quat[e, b]))
+        err = quat_error(lib4(body_quat_relative, ee, i), wxyz(body_quat[e, b]))
         ori_sq += err * err
-        dv = _vec3(ref_body_lin_vel, e, i) - body_lin_vel[e, b]
+        dv = lib3(lib_body_lin_vel, f, i) - body_lin_vel[e, b]
         lin_sq += wp.dot(dv, dv)
-        dw = _vec3(ref_body_ang_vel, e, i) - body_ang_vel[e, b]
+        dw = lib3(lib_body_ang_vel, f, i) - body_ang_vel[e, b]
         ang_sq += wp.dot(dw, dw)
     n = float(num_tracked)
     col = columns[BODY_POS]
@@ -225,10 +190,10 @@ def _tracking_rewards_kernel(
     if col >= 0:
         count = float(0.0)
         for k in range(contact_bodies.shape[0]):
-            c = contact_bodies[k]
+            cb = contact_bodies[k]
             peak = float(0.0)
             for h in range(contact_forces.shape[1]):
-                peak = wp.max(peak, wp.length(contact_forces[e, h, c]))
+                peak = wp.max(peak, wp.length(contact_forces[e, h, cb]))
             if peak > contact_threshold:
                 count += 1.0
         raw[e, col] = count
@@ -243,14 +208,17 @@ def _tracking_rewards_kernel(
 
     col = columns[POINTS_LOCAL]
     if col >= 0:
-        ref_inv = _quat_inv(ref_anchor_q)
-        robot_inv = _quat_inv(robot_anchor_quat)
+        ref_inv = qinv(ref_anchor_quat)
+        robot_inv = qinv(robot_anchor_quat)
         s = float(0.0)
         for k in range(point_bodies.shape[0]):
             b = point_bodies[k]
-            robot_point = body_pos[e, b] + _quat_apply(_wxyz(body_quat[e, b]), point_offsets[k])
-            ref_local = _quat_apply(ref_inv, _vec3(ref_points, e, k) - ref_anchor_p)
-            robot_local = _quat_apply(robot_inv, robot_point - robot_anchor_pos)
+            m = point_bodies_motion[k]
+            # TrackingCommand.reward_point_body_pos_w, same operation order
+            ref_point = lib3(lib_body_pos, f, m) + qapply(lib4(lib_body_quat, f, m), point_offsets[k])
+            ref_local = qapply(ref_inv, ref_point + origin - ref_anchor_pos)
+            robot_point = body_pos[e, b] + qapply(wxyz(body_quat[e, b]), point_offsets[k])
+            robot_local = qapply(robot_inv, robot_point - robot_anchor_pos)
             dl = robot_local - ref_local
             s += wp.dot(dl, dl)
         raw[e, col] = wp.exp(-(s / float(point_bodies.shape[0])) / variance[POINTS_LOCAL])
@@ -264,8 +232,15 @@ def _tracking_rewards_kernel(
         raw[e, col] = s
 
 
-def _int_array(values, device) -> wp.array:
-    return wp.array([int(v) for v in values], dtype=wp.int32, device=device)
+def term_signature(term_cfgs) -> list:
+    """The run-time adjustable part of the term configs: weights and scalar parameters."""
+    return [
+        (
+            getattr(c, "weight", None),
+            {k: v for k, v in c.params.items() if isinstance(v, (bool, int, float, str))},
+        )
+        for c in term_cfgs
+    ]
 
 
 class FusedRewardManager(RewardManager):
@@ -276,22 +251,25 @@ class FusedRewardManager(RewardManager):
         self._check = check
         self._check_steps = 0
         self._check_max = torch.zeros(len(self._term_names), device=self.device)
-        self._unsupported = self._prepare_fused()
+        self._prepare_fused()
         if self._unsupported:
             print(f"[FusedRewardManager] stock per-term path: {self._unsupported}")  # noqa: T201
         else:
-            print(
-                f"[FusedRewardManager] {len(self._term_names)} terms in one Warp kernel"
-            )  # noqa: T201
+            print(f"[FusedRewardManager] {len(self._term_names)} terms in one Warp kernel")  # noqa: T201
 
-    def _prepare_fused(self) -> str | None:
-        """Map the configured terms onto kernel slots; returns why not, or None when all are supported."""
+    def _prepare_fused(self):
+        """Map the configured terms onto kernel slots; sets ``_unsupported`` to why not, or None."""
+        self._signature = term_signature(self._term_cfgs)
+        self._unsupported = self._map_terms()
+
+    def _map_terms(self) -> str | None:
         dev = self.device
         columns = [-1] * NUM_KINDS
         variance = [1.0] * NUM_KINDS
         command_names = set()
         self._contact_threshold, self._shake_threshold = 1.0, 1.5
         self._sensor_name = None
+        contact_ids = []
         limit_cfg = acc_cfg = None
         shake_names = None
         for col, (name, term_cfg) in enumerate(zip(self._term_names, self._term_cfgs)):
@@ -313,7 +291,7 @@ class FusedRewardManager(RewardManager):
                 self._sensor_name = params["sensor_cfg"].name
                 contact_ids = params["sensor_cfg"].body_ids
                 if isinstance(contact_ids, slice):
-                    contact_ids = range(self._env.scene.sensors[self._sensor_name].num_bodies)
+                    contact_ids = range(self._env.scene.sensors[self._sensor_name].num_sensors)
             elif kind == ANTI_SHAKE:
                 self._shake_threshold = float(params.get("threshold", 1.5))
                 shake_names = params.get("body_names")
@@ -323,81 +301,69 @@ class FusedRewardManager(RewardManager):
                 acc_cfg = params["asset_cfg"]
             # zero-weight terms stay 0 in the raw buffer, like the stock path's skip
             columns[kind] = col if term_cfg.weight != 0.0 else -1
-        if len(command_names) > 1:
-            return f"several commands {command_names}"
-        self._command = (
-            self._env.command_manager.get_term(command_names.pop()) if command_names else None
-        )
-        robot = self._command.robot if self._command is not None else self._env.scene["robot"]
-        self._robot = robot
+        if len(command_names) != 1:
+            return f"commands {command_names}"
+        command = self._env.command_manager.get_term(command_names.pop())
+        if command.use_ref_motion_root_quat_w_as_anchor or getattr(command, "_offline", False):
+            return "the command reads the anchor from the reference motion"
         for cfg in (limit_cfg, acc_cfg):
             if cfg is not None and cfg.name != "robot":
                 return f"joint term on asset '{cfg.name}'"
 
         def joint_ids(cfg):
             if cfg is None or isinstance(cfg.joint_ids, slice):
-                return range(robot.num_joints)
+                return range(command.robot.num_joints)
             return cfg.joint_ids
 
-        tracked = self._command.body_indexes if self._command is not None else torch.zeros(0)
-        self._columns = _int_array(columns, dev)
+        self._command = command
+        tracked = command.body_indexes
+        points = columns[POINTS_LOCAL] >= 0
+        self._columns = int_array(columns, dev)
         self._variance = wp.array(variance, dtype=float, device=dev)
-        self._tracked_bodies = _int_array(tracked.tolist(), dev)
-        shake = _get_body_indexes(self._command, shake_names) if self._command is not None else []
-        self._shake_bodies = _int_array([int(tracked[i]) for i in shake], dev)
-        self._point_bodies = _int_array(
-            self._command.reward_point_body_indices if self._command else [], dev
+        self._tracked_bodies = int_array(tracked.tolist(), dev)
+        self._shake_bodies = int_array(tracked[_get_body_indexes(command, shake_names)].tolist(), dev)
+        self._point_bodies = int_array(command.reward_point_body_indices if points else [], dev)
+        self._point_bodies_motion = int_array(
+            command.reward_point_body_indices_motion if points else [], dev
         )
-        offsets = self._command.reward_point_body_offsets[0] if self._command else torch.zeros(0, 3)
-        self._point_offsets = wp.array(offsets.cpu().numpy(), dtype=wp.vec3f, device=dev)
-        self._limit_joints = _int_array(joint_ids(limit_cfg), dev)
-        self._acc_joints = _int_array(joint_ids(acc_cfg), dev)
-        self._contact_bodies = _int_array(
-            contact_ids if columns[UNDESIRED_CONTACTS] >= 0 else [], dev
+        self._point_offsets = wp.array(
+            command.reward_point_body_offsets[0].cpu().numpy() if points else [],
+            dtype=wp.vec3f,
+            device=dev,
         )
+        self._limit_joints = int_array(joint_ids(limit_cfg), dev)
+        self._acc_joints = int_array(joint_ids(acc_cfg), dev)
+        self._contact_bodies = int_array(contact_ids, dev)
+        self._no_contacts = wp.zeros((self.num_envs, 1, 1), dtype=wp.vec3f, device=dev)
         self._weights = torch.tensor([float(c.weight) for c in self._term_cfgs], device=dev)
         self._raw = torch.zeros((self.num_envs, len(self._term_names)), device=dev)
         self._raw_wp = wp.from_torch(self._raw)
-        self._empty3 = wp.zeros((self.num_envs, 1, 1), dtype=float, device=dev)
         return None
 
     def compute(self, dt: float) -> torch.Tensor:
-        if self._unsupported:  # _prepare_fused stopped before setting the command
+        if term_signature(self._term_cfgs) != self._signature:
+            self._prepare_fused()
+        if self._unsupported:
             return super().compute(dt)
         command = self._command
-        if (
-            command is None
-            or command.use_ref_motion_root_quat_w_as_anchor
-            or getattr(command, "_offline", False)
-        ):
-            return super().compute(dt)
-
-        def ref(t):
-            return wp.from_torch(t.contiguous())
-
-        data = self._robot.data
+        lib, data = command.motion_lib, command.robot.data
         if self._sensor_name is not None:
-            contact = self._env.scene.sensors[
-                self._sensor_name
-            ].data.net_normal_forces_w_history.warp
+            contact = self._env.scene.sensors[self._sensor_name].data.net_normal_forces_w_history.warp
         else:
-            contact = wp.zeros((self.num_envs, 1, 1), dtype=wp.vec3f, device=self.device)
+            contact = self._no_contacts
         action_manager = self._env.action_manager
         wp.launch(
             _tracking_rewards_kernel,
             dim=self.num_envs,
             inputs=[
-                ref(command.anchor_pos_w),
-                ref(command.anchor_quat_w),
+                cursor(command),
+                ref(lib.body_pos_w),
+                ref(lib.body_quat_w),
+                ref(lib.body_lin_vel_w),
+                ref(lib.body_ang_vel_w),
+                ref(self._env.scene.env_origins),
                 ref(command.body_pos_relative_w),
                 ref(command.body_quat_relative_w),
-                ref(command.body_lin_vel_w),
-                ref(command.body_ang_vel_w),
-                (
-                    ref(command.reward_point_body_pos_w)
-                    if self._point_bodies.shape[0]
-                    else self._empty3
-                ),
                 data.body_pos_w.warp,
                 data.body_quat_w.warp,
                 data.body_lin_vel_w.warp,
@@ -409,9 +375,11 @@ class FusedRewardManager(RewardManager):
                 ref(action_manager.action),
                 ref(action_manager.prev_action),
                 command.robot_anchor_body_index,
+                command.motion_anchor_body_index,
                 self._tracked_bodies,
                 self._shake_bodies,
                 self._point_bodies,
+                self._point_bodies_motion,
                 self._point_offsets,
                 self._limit_joints,
                 self._acc_joints,
@@ -442,9 +410,5 @@ class FusedRewardManager(RewardManager):
             self._check_max[col] = torch.maximum(self._check_max[col], err)
         self._check_steps += 1
         if self._check_steps % 24 == 0:
-            worst = ", ".join(
-                f"{n}={v:.2e}" for n, v in zip(self._term_names, self._check_max.tolist())
-            )
-            print(
-                f"[FusedRewardManager] parity over {self._check_steps} steps, max rel err: {worst}"
-            )  # noqa: T201
+            worst = ", ".join(f"{n}={v:.2e}" for n, v in zip(self._term_names, self._check_max.tolist()))
+            print(f"[FusedRewardManager] parity over {self._check_steps} steps, max rel err: {worst}")  # noqa: T201

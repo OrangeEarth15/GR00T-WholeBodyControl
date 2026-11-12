@@ -3265,11 +3265,14 @@ class TrackingCommand(CommandTerm):
         count = mask.sum().clamp(min=1)
         fused = self.__dict__.get("_fused")  # fused_command: the metrics are columns of one buffer
         if fused is not None and set(self.metrics) == set(fused.columns):
-            means = (fused.metrics * mask[:, None]).sum(dim=0) / count
+            # where, not a product: a NaN metric in an env outside the mask must not reach the mean
+            means = torch.where(mask[:, None], fused.metrics, 0.0).sum(dim=0) / count
             extras = {name: means[fused.columns[name]] for name in self.metrics}
             fused.metrics.masked_fill_(mask[:, None], 0.0)
         else:
-            extras = {name: (value * mask).sum() / count for name, value in self.metrics.items()}
+            extras = {
+                name: torch.where(mask, value, 0.0).sum() / count for name, value in self.metrics.items()
+            }
             for value in self.metrics.values():
                 value.masked_fill_(mask, 0.0)
         self.command_counter.masked_fill_(mask, 0)
