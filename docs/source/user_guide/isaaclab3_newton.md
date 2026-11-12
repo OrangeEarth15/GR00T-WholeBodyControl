@@ -278,25 +278,30 @@ per iteration on one GPU, 2.83 s on eight); the extra time is the gradient all-r
 `bf16_autocast` the same node ran one to four GPUs at 94% of linear. Eight GPUs hung there because one of its GPUs
 is faulty: bf16 cuBLAS GEMMs never finish on it, even in a plain PyTorch loop on that GPU alone, while the other seven
 GPUs run the same code. bf16 on those seven ran at 87% of linear (2.58 s per iteration; 2.43 s with dense routing and
-`update_graph`). FP32 on eight GPUs, faulty one included, ran 2000 iterations without a hang.
+`update_graph`). FP32 on eight GPUs, faulty one included, ran 2000 iterations without a hang, and bf16 on all eight
+GPUs of a second node of the same type runs, eager and with `update_graph`.
 
 The policy has little margin for action delay: evaluated with the joints one control step (20 ms) behind the
 policy, the released checkpoint's success rate drops from 96.1% to 91.0% on Newton, and two steps fail nearly every
 motion; Newton fine-tunes behave the same. `manager_env.config.action_delay=[min, max]` delays the joints by `min` to
 `max` physics steps (5 ms each), drawn per env at every episode start; `[4, 4]` evaluates at a fixed one-control-step
-delay. Fine-tunes with the position rewards above (one GPU, small step, 500 iterations), with and without a random
-delay in training, evaluated on Newton (success rate):
+delay. Fine-tunes with the position rewards above, with and without a random delay in training, evaluated on Newton
+(success rate):
 
 | Delay in training | 0 ms | 10 ms | 20 ms | 40 ms | Global position, no delay |
 |---|---|---|---|---|---|
-| none | 96.9% | 95.7% | 89.7% | 1.9% | +1 mm |
-| 0 to 10 ms | 96.4% | 96.0% | 92.1% | 9.8% | +19 mm |
-| 0 to 20 ms | 96.0% | 95.8% | 93.6% | 45.7% | +40 mm |
+| none (one GPU, small step, 500 iterations) | 96.9% | 95.7% | 89.7% | 1.9% | +1 mm |
+| 0 to 10 ms (same) | 96.4% | 96.0% | 92.1% | 9.8% | +19 mm |
+| 0 to 20 ms (same) | 96.0% | 95.8% | 93.6% | 45.7% | +40 mm |
+| none (eight GPUs, default step, 2000 iterations) | 97.7% | 96.4% | 90.9% | 1.3% | -13 mm |
+| 0 to 10 ms (same) | 97.2% | 97.1% | 95.2% | 27.5% | +2 mm |
 
 (released checkpoint: 96.1%, 95.2%, 91.0%, 0.7%; global position relative to it). A random delay in training buys
 margin for long delays at the cost of no-delay tracking, mostly the global position; a heavier root term (weight 3.0)
-halves that drift but cuts the gain in local MPJPE by a third, and 1000 iterations make the drift larger. At 10 ms all of them track
-about equally, so measure the robot's latency from observation to motor command before choosing.
+halves that drift but cuts the gain in local MPJPE by a third, and 1000 iterations make the drift larger. The
+eight-GPU run keeps more of the margin (95.2% against 92.1% at 20 ms) and pays 15 mm of global position and 1.2 mm of
+local MPJPE against the same run without delay. At 10 ms all of them track about equally, so measure the robot's
+latency from observation to motor command before choosing.
 
 ## Measured on one H100 PCIe, 4096 envs (2026-11-09)
 
