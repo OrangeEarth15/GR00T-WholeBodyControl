@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 # Import joint index functions (single source of truth)
 from gear_sonic.envs.env_utils.joint_utils import get_body_joint_indices, get_hand_joint_indices
+from gear_sonic.isaac_utils.math_wxyz import xyzw_from_wxyz
 
 # Import visualization markers for contact point visualization
 try:
@@ -1953,12 +1954,12 @@ class ManagerEnvWrapper:
         else:
             root_pos = root_pos + self.env.scene.env_origins[self._replay_env_ids]
 
-        # Write state to simulation for all environments
+        # Write state to simulation for all environments; Isaac Lab 3.0 takes (x, y, z, w) quaternions
         self.motion_command.robot.write_joint_state_to_sim(
             joint_pos, joint_vel, env_ids=self._replay_env_ids
         )
         self.motion_command.robot.write_root_state_to_sim(
-            torch.cat([root_pos, root_quat, root_lin_vel, root_ang_vel], dim=-1),
+            torch.cat([root_pos, xyzw_from_wxyz(root_quat), root_lin_vel, root_ang_vel], dim=-1),
             env_ids=self._replay_env_ids,
         )
 
@@ -1989,7 +1990,7 @@ class ManagerEnvWrapper:
             for obj_idx in range(object_root_pos.shape[1]):
                 obj_pos = object_root_pos[:, obj_idx, :]
                 obj_quat = object_root_quat[:, obj_idx, :]
-                object_root_pose = torch.cat([obj_pos, obj_quat], dim=-1)
+                object_root_pose = torch.cat([obj_pos, xyzw_from_wxyz(obj_quat)], dim=-1)
 
                 self.env.scene["object"].write_root_pose_to_sim(
                     object_root_pose, env_ids=self._replay_env_ids
@@ -2027,7 +2028,7 @@ class ManagerEnvWrapper:
             else:
                 table_pos = table_pos + self.env.scene.env_origins[self._replay_env_ids]
 
-            table_root_pose = torch.cat([table_pos, table_quat], dim=-1)
+            table_root_pose = torch.cat([table_pos, xyzw_from_wxyz(table_quat)], dim=-1)
             self.env.scene["table"].write_root_pose_to_sim(
                 table_root_pose, env_ids=self._replay_env_ids
             )

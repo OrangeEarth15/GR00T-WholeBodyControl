@@ -16,6 +16,8 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+from gear_sonic.isaac_utils.math_wxyz import wxyz_from_xyzw
+
 if TYPE_CHECKING:
     from isaaclab import envs
 
@@ -277,29 +279,29 @@ class TrajectoryRecorderTerm(recorder_manager.RecorderTerm):
             if self._motion_cmd is not None:
                 root_pos = self._motion_cmd.robot_body_pos_w[i, 0].cpu().numpy().copy()
             else:
-                root_pos = robot.data.root_pos_w[i].cpu().numpy().copy()
+                root_pos = robot.data.root_pos_w.torch[i].cpu().numpy()
             root_pos_rel = root_pos - env_origins[i].cpu().numpy()
             self._frame_data[i]["root_pos_w"].append(root_pos_rel)
 
-            # Root quaternion (wxyz)
-            root_quat = robot.data.root_quat_w[i].cpu().numpy().copy()
+            # Root quaternion, stored (w, x, y, z); Isaac Lab 3.0 holds (x, y, z, w)
+            root_quat = wxyz_from_xyzw(robot.data.root_quat_w.torch[i]).cpu().numpy()
             self._frame_data[i]["root_quat_w"].append(root_quat)
 
             # Object state
             if self._has_object:
                 obj = self.env.scene["object"]
-                obj_pos = obj.data.root_pos_w[i].cpu().numpy().copy()
+                obj_pos = obj.data.root_pos_w.torch[i].cpu().numpy()
                 obj_pos_rel = obj_pos - env_origins[i].cpu().numpy()
-                obj_quat = obj.data.root_quat_w[i].cpu().numpy().copy()
+                obj_quat = wxyz_from_xyzw(obj.data.root_quat_w.torch[i]).cpu().numpy()
                 self._frame_data[i]["object_pos_w"].append(obj_pos_rel)
                 self._frame_data[i]["object_quat_w"].append(obj_quat)
 
             # Table state
             if self._has_table:
                 table = self.env.scene["table"]
-                table_pos = table.data.root_pos_w[i].cpu().numpy().copy()
+                table_pos = table.data.root_pos_w.torch[i].cpu().numpy()
                 table_pos_rel = table_pos - env_origins[i].cpu().numpy()
-                table_quat = table.data.root_quat_w[i].cpu().numpy().copy()
+                table_quat = wxyz_from_xyzw(table.data.root_quat_w.torch[i]).cpu().numpy()
                 self._frame_data[i]["table_pos_w"].append(table_pos_rel)
                 self._frame_data[i]["table_quat_w"].append(table_quat)
 
